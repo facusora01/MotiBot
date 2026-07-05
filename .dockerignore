@@ -1,0 +1,15 @@
+# node_modules local es de Windows: el binario nativo de better-sqlite3 NO sirve
+# en Linux. Se reinstala dentro de la imagen.
+node_modules
+
+# La sesión se monta como volumen (docker-compose), no se hornea en la imagen.
+bot_session
+
+# DB local: el contenedor de pruebas arranca con su propia base limpia.
+*.db
+
+.git
+.gitignore
+.env
+npm-debug.log
+*.log

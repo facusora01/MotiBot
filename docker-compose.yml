@@ -1,0 +1,13 @@
+services:
+  motibot:
+    build: .
+    container_name: motibot-test
+    # Variables (BOT_PHONE, PAIR_TOKEN, SMTP_*, etc.) desde tu .env local.
+    env_file: .env
+    ports:
+      - "3001:3001"   # /health, /pair, /frases
+    volumes:
+      # Persistimos la sesión en el host: sobrevive a reinicios del contenedor y
+      # permite probar el backup/restore de session-backup.js entre arranques.
+      - ./bot_session:/app/bot_session
+    restart: unless-stopped

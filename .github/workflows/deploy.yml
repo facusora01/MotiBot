@@ -1,0 +1,81 @@
+name: Deploy MotivationBot 🚀
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Conectar a Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies (CI)
+        run: npm ci
+
+      - name: Run Automated Tests
+        run: npm test
+
+      - name: Deploy via SSH
+        if: success() 
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            cd ~/motivational-bot
+            
+            # 1. ACTUALIZACIÓN DE CÓDIGO
+            git fetch origin
+            # IMPORTANTE: Asegurate que '.wwebjs_auth' esté en tu .gitignore 
+            # para que este reset no borre tu sesión de WhatsApp.
+            git reset --hard origin/main
+            
+            # 2. INSTALACIÓN DE PRODUCCIÓN
+            npm ci --omit=dev
+            
+            # 3. REINICIO DE TÚNEL (vía wrapper tunnel.sh)
+            # El quick tunnel rota la URL en cada arranque. tunnel.sh la captura de
+            # la salida de cloudflared y la escribe en .tunnel_url; el bot la lee EN
+            # VIVO al armar links. Así, si el túnel reinicia solo (crash/reboot), el
+            # bot usa la URL nueva sin sed ni reinicio. delete+start: args limpios.
+            chmod +x tunnel.sh
+            pm2 delete cloudflare-tunnel || true
+            # Puerto 3001: propio de MotiBot, NO choca con el 3000 de WebAmankay.
+            pm2 start ./tunnel.sh --name cloudflare-tunnel --interpreter bash -- 3001
+
+            echo "⏳ Esperando a Cloudflare..."
+            sleep 15
+
+            if [ -s .tunnel_url ]; then
+                echo "✅ URL del túnel: $(cat .tunnel_url)"
+            else
+                echo "⚠️ Advertencia: .tunnel_url vacío todavía (el bot reintenta al leerlo en vivo)."
+            fi
+
+            # 4. REINICIO DEL BOT VÍA ECOSYSTEM
+            # Usa ecosystem.config.js: heap de Node 512MB + backoff exponencial
+            # (anti restart-storm) + reinicio por memoria a 600MB.
+            # Borramos y recreamos para que tome cualquier cambio de config.
+            pm2 delete motibot || true
+            pm2 start ecosystem.config.js
+            
+            # 5. GUARDAR ESTADO PARA REINICIOS DE LA NOTEBOOK
+            pm2 save
+            
+            echo "✅ Deploy exitoso y memoria optimizada - $(date)"
