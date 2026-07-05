@@ -1,4 +1,3 @@
-// encontrar-grupo.js
 // Ejecutá este script UNA SOLA VEZ para ver los IDs de tus grupos.
 // Luego copiá el que querés en el .env como GRUPO_ID.
 
@@ -10,7 +9,7 @@ const client = new Client({
   authStrategy: new LocalAuth({ clientId: "motibot" }),
   puppeteer: {
     headless: true,
-    protocolTimeout: 120000, // ← agregá esta línea (2 minutos)
+    protocolTimeout: 120000,
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   },
 });

@@ -1,108 +1,160 @@
-# 🤖 MotivacionalBot
+# 🤖 MotiBot
 
-Bot de WhatsApp que envía una frase motivacional aleatoria a un grupo, una vez por día.
+Bot de WhatsApp que manda frases motivacionales a tus grupos. Cada grupo elige
+idioma, hora y frecuencia de envío, y puede armar su propia colección de
+frases (`/new`, `/add`) en vez de usar la librería por defecto.
 
 ---
 
 ## Estructura
 
 ```
-motivacional-bot/
-├── index.js            ← Bot principal
-├── encontrar-grupo.js  ← Script para obtener el ID de tu grupo
-├── .env                ← Tu configuración (crearlo desde .env.example)
-└── .env.example        ← Plantilla de configuración
+MotivationBot/
+├── index.js            ← Bot principal: cliente WhatsApp, cron, servidor web, watchdog
+├── commands.js         ← Lógica de los comandos /mbot y /new
+├── database.js         ← SQLite (grupos, settings, frases custom)
+├── phrases.js          ← Frases locales + pool de frases remotas (APIs externas)
+├── notify.js           ← Alerta por mail cuando el bot pierde la sesión
+├── session-backup.js   ← Backup/restore de la sesión de WhatsApp
+├── tunnel-url.js        ← Lee la URL vigente del túnel de Cloudflare
+├── tunnel.sh            ← Wrapper de cloudflared (persiste la URL en .tunnel_url)
+├── encontrar-grupo.js  ← Script opcional para listar IDs de grupo (no hace
+│                          falta para el uso normal: el bot se suma a un grupo
+│                          con /mbot add, sin necesidad del ID a mano)
+├── ecosystem.config.js ← Config de PM2 (producción)
+├── start.ps1            ← Levanta el bot en Docker para pruebas locales
+├── docker-compose.yml   ← Definición del contenedor de pruebas
+├── Dockerfile           ← Imagen de pruebas (misma base que el server real)
+└── env.example         ← Plantilla de configuración
 ```
 
 ---
 
-## Setup paso a paso
+## Setup
 
-### 1. Instalá las dependencias (ya lo hiciste)
+### 1. Instalar dependencias
 ```bash
-npm init -y
-npm install whatsapp-web.js qrcode-terminal node-cron
+npm install
 ```
 
-### 2. Instalá dotenv para leer el .env
+### 2. Configurar el `.env`
 ```bash
-npm install dotenv
+cp env.example .env
 ```
-Y agregá esta línea al **principio** de `index.js` y `encontrar-grupo.js`:
-```js
-require("dotenv").config();
-```
+Completá al menos `HORA_ENVIO` y `CHROMIUM_PATH`. El resto (`BOT_PHONE`,
+`PAIR_TOKEN`, `SMTP_*`, `SUPER_ADMINS`, `MYMEMORY_EMAIL`) es opcional — habilita
+la re-vinculación automática por mail, los comandos de super admin y el
+traductor. Ver los comentarios en `env.example` para el detalle de cada uno.
 
-### 3. Creá tu archivo de configuración
-```bash
-cp .env.example .env
-```
-
-### 4. Encontrá el ID de tu grupo
-```bash
-node encontrar-grupo.js
-```
-Escaneá el QR con WhatsApp → el script imprime todos tus grupos con sus IDs.
-Copiá el ID que corresponda (tiene el formato `120363XXXX@g.us`) y pegalo en `.env`.
-
-### 5. Configurá la hora de envío
-En el `.env`, cambiá `HORA_ENVIO` a la hora que querés (formato 24hs, horario Argentina):
-```
-HORA_ENVIO=08:00
-```
-
-### 6. Correlo
+### 3. Vincular WhatsApp
 ```bash
 node index.js
 ```
-Escaneá el QR → el bot queda corriendo y enviará la frase todos los días a la hora configurada.
+Al arrancar sin sesión, el bot muestra un QR en la consola: escaneálo desde
+WhatsApp (Dispositivos vinculados → Vincular un dispositivo).
+
+Si no tenés cámara a mano (por ejemplo, corriendo en un servidor remoto), una
+vez vinculado una primera vez podés re-vincular por código en vez de QR: abrí
+`/pair?key=<PAIR_TOKEN>` en el navegador (necesita `TUNNEL_URL` o
+`.tunnel_url` accesible) y tipeá el código de 8 dígitos en WhatsApp.
+
+Una vez conectado, el bot queda escuchando comandos y el scheduler corre solo.
 
 ---
 
-## Mantenerlo corriendo en la laptop (con PM2)
+## Comandos de WhatsApp
 
-Para que el bot sobreviva cierres de terminal y se reinicie solo:
+**Configuración (solo admins del grupo):**
+- `/mbot add` — suma el bot al grupo
+- `/mbot remove` — lo saca del grupo
+- `/mbot lang es|en` — idioma de las frases
+- `/mbot clock HH:MM` — hora de envío diario
+- `/mbot freq <1-6>` — cuántas veces por día
+- `/mbot use custom|default` — cambiar entre librería del equipo y la clásica
+
+**Frases:**
+- `/new "Frase" - Autor` — sumar una frase a la colección del grupo
+- `/add` (en reply a un mensaje) — guardar ese mensaje como frase
+- `/mbot phrase` — pedir una frase ya mismo
+- `/mbot list` — link al panel web para gestionar la colección
+
+**Info:**
+- `/mbot status`, `/mbot time`, `/mbot help`
+
+---
+
+## Probar en local con Docker (antes de deployar)
+
+`start.ps1` levanta el bot dockerizado para probar cambios sin tocar el
+servidor de producción:
+
+```powershell
+./start.ps1
+```
+
+Hace todo el setup: crea el `.env` desde `env.example` si no existe, buildea
+la imagen (`Dockerfile`, Debian + Chromium, igual que el server real) y
+levanta el contenedor con `docker-compose.yml`. La sesión de WhatsApp queda
+en `bot_session/` en el host, así sobrevive a reinicios del contenedor. Al
+final sigue los logs en vivo — ahí aparece el QR o el código de pairing para
+vincular. Health check en `http://localhost:3001/health` y re-vinculación en
+`http://localhost:3001/pair?key=TU_PAIR_TOKEN`.
+
+Para parar: `docker compose down`.
+
+---
+
+## Correrlo con PM2 (producción)
 
 ```bash
-# Instalá PM2 globalmente
 npm install -g pm2
-
-# Iniciá el bot con PM2
-pm2 start index.js --name motivacional-bot
-
-# Que arranque solo cuando prenda la laptop
-pm2 startup
+pm2 start ecosystem.config.js
 pm2 save
+pm2 startup   # para que arranque solo tras un reboot
 ```
 
-Comandos útiles de PM2:
 ```bash
-pm2 status              # Ver si está corriendo
-pm2 logs motivacional-bot  # Ver los logs en tiempo real
-pm2 restart motivacional-bot
-pm2 stop motivacional-bot
+pm2 logs motibot
+pm2 restart motibot
+pm2 stop motibot
 ```
+
+`ecosystem.config.js` ya trae backoff exponencial entre reinicios y un tope de
+memoria (600MB) para reciclar el proceso si Chromium pierde memoria.
+
+### Túnel público (opcional, para `/pair` y `/mbot list`)
+
+Si corrés el bot en un servidor sin dominio propio, `tunnel.sh` levanta un
+quick tunnel de Cloudflare y mantiene `.tunnel_url` actualizado aunque el
+túnel reinicie solo:
+
+```bash
+pm2 start ./tunnel.sh --name cloudflare-tunnel --interpreter bash -- 3001
+```
+
+### Deploy automático
+
+`.github/workflows/deploy.yml` hace push→SSH→`git reset --hard`→reinstala→
+reinicia PM2 (bot + túnel) en cada push a `main`. Requiere los secrets
+`SSH_HOST`, `SSH_USER`, `SSH_PRIVATE_KEY` y `TAILSCALE_AUTHKEY` configurados
+en el repo.
 
 ---
 
-## Probar sin esperar al cron
+## Tests
 
-En `index.js`, dentro del evento `ready`, descomentá el bloque de "TEST INMEDIATO":
-```js
-setTimeout(async () => {
-  const frase = getFraseAleatoria();
-  const mensaje = formatearMensaje(frase);
-  await client.sendMessage(GRUPO_ID, mensaje);
-  console.log("📤 Mensaje de prueba enviado!");
-}, 5000);
+```bash
+npm test
 ```
+
+Corre `tests.js`: simula comandos contra un grupo mock y valida permisos,
+límites de frases y el cálculo de horarios/frecuencia.
 
 ---
 
-## Agregar más frases
+## Notas
 
-En `index.js`, el array `frases` tiene el formato:
-```js
-{ texto: "Tu frase acá", autor: "El autor" }
-```
-Agregás las que quieras al array y listo.
+- La sesión de WhatsApp vive en `bot_session/` (no se versiona). Si el bot
+  pierde la sesión (logout) y no logra recuperarse tras varios reinicios, se
+  auto-limpia y vuelve a pedir QR/pairing — no hace falta borrar nada a mano.
+- `motivacional.db` (SQLite) tampoco se versiona; se crea sola al arrancar.

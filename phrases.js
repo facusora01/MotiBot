@@ -1,8 +1,7 @@
 const https = require("https");
 
-// ─── CONFIGURACIÓN DE FUENTES ────────────────────────────────────────────────
 const SOURCES = [
-  { id: 'LOCAL', lang: 'es' }, // Tus frases grabadas a fuego
+  { id: 'LOCAL', lang: 'es' },
   { id: 'GITHUB_ES', url: "https://raw.githubusercontent.com/skatox/frases-famosas-latinoamerica/master/frases.json", lang: 'es' },
   { id: 'ZENQUOTES', url: "https://zenquotes.io/api/random", lang: 'en' },
   { id: 'QUOTABLE', url: "https://api.quotable.io/random", lang: 'en' },
@@ -11,14 +10,12 @@ const SOURCES = [
   { id: 'FAVQS', url: "https://favqs.com/api/qotd", lang: 'en' }
 ];
 
-// ─── TRADUCTOR (MyMemory con tu identidad) ───────────────────────────────────
 async function translateTo(text, lang) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3000); // 3 seg timeout
-  
+  const timeout = setTimeout(() => controller.abort(), 3000);
+
   try {
-    // MYMEMORY_EMAIL (opcional): identifica el uso ante MyMemory y sube la cuota
-    // diaria de traducción. Sin él, funciona igual con la cuota anónima.
+    // MYMEMORY_EMAIL opcional: sube la cuota diaria de traducción ante MyMemory.
     const de = process.env.MYMEMORY_EMAIL ? `&de=${encodeURIComponent(process.env.MYMEMORY_EMAIL)}` : "";
     const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|es${de}`;
     const res = await fetch(url, { signal: controller.signal });
@@ -32,7 +29,6 @@ async function translateTo(text, lang) {
   }
 }
 
-// Helper con timeout para fetch
 async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -46,8 +42,6 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
   }
 }
 
-// ─── NORMALIZADOR DE JSON ────────────────────────────────────────────────────
-// Cada API devuelve la frase con nombres de campos distintos; aquí los unificamos.
 function standardize(data, sourceId) {
   switch (sourceId) {
     case 'ZENQUOTES': return { texto: data[0].q, autor: data[0].a };
@@ -62,17 +56,13 @@ function standardize(data, sourceId) {
   }
 }
 
-// ─── MOTOR PRINCIPAL ─────────────────────────────────────────────────────────
 async function getPhrase(targetLang = "es") {
-  // 1. Elegimos una fuente al azar
   const source = SOURCES[Math.floor(Math.random() * SOURCES.length)];
-  
-  // 2. Si salió LOCAL, vamos directo al respaldo
   if (source.id === 'LOCAL') return getRandomSpanishPhrase();
 
   try {
     const headers = {};
-    // 🔑 Nota: NINJAS requiere API Key. Si no tenés, fallará y saltará al catch (Jump).
+    // NINJAS requiere API key; sin ella falla y cae al catch.
     if (source.id === 'NINJAS') headers['X-Api-Key'] = process.env.NINJAS_API_KEY;
 
     const res = await fetchWithTimeout(source.url, { headers }, 4000);
@@ -87,34 +77,26 @@ async function getPhrase(targetLang = "es") {
 
     const phrase = standardize(rawData, source.id);
 
-    // 3. Traducción si el idioma de la frase no coincide con el del grupo
     if (phrase && source.lang !== targetLang) {
       phrase.texto = await translateTo(phrase.texto, targetLang);
     }
 
     return phrase || getRandomSpanishPhrase();
   } catch (error) {
-    // 🚀 EL JUMP: Si cualquier API falla, devolvemos una local al toque
-    return getRandomSpanishPhrase();
+    return getRandomSpanishPhrase(); // el "Jump": cualquier falla cae a una frase local
   }
 }
 
-// ─── POOL DE FRASES REMOTAS (PREFETCH EN BACKGROUND) ─────────────────────────
-// Las APIs remotas tardan (fetch 4s + traducción 3s) y eso demoraba el reply de
-// /mbot phrase. Mantenemos un stock pre-cargado por idioma: el usuario saca una
-// al instante y el stock se rellena de fondo, sin que nadie espere. Conserva la
-// diversidad remota sin la latencia. (Las frases custom NO van acá: salen de
-// SQLite, ya instantáneo, y un pool rompería su frescura.)
-const POOL_MAX = 20;            // tope de frases en stock por idioma
-const POOL_MIN = 5;             // umbral para disparar el rellenado
+// Pool pre-cargado por idioma: las APIs remotas tardan (fetch + traducción) y
+// demoraban el reply de /mbot phrase. Custom no va acá: ya es instantáneo por
+// SQLite, y un pool le rompería la frescura.
+const POOL_MAX = 20;
+const POOL_MIN = 5;
 const pools = { es: [], en: [] };
 const rellenando = { es: false, en: false };
 
-// Trae UNA frase remota ya lista (traducida si hace falta). Devuelve null si la
-// fuente falla — el que llama decide si reintenta o usa local.
 async function fetchRemota(targetLang) {
-  // Solo fuentes remotas. Para 'en' evitamos las 'es' (translateTo solo hace
-  // en→es, no al revés, así que una fuente 'es' no se traduce bien a inglés).
+  // translateTo solo traduce en→es, así que para 'en' evitamos fuentes 'es'.
   let candidatas = SOURCES.filter((s) => s.id !== "LOCAL");
   if (targetLang === "en") candidatas = candidatas.filter((s) => s.lang === "en");
   if (!candidatas.length) return null;
@@ -142,8 +124,6 @@ async function fetchRemota(targetLang) {
   }
 }
 
-// Rellena el pool de un idioma hasta POOL_MAX. Guard contra rellenados solapados
-// y tope de intentos para no quedar en loop si todas las APIs están caídas.
 async function rellenarPool(lang) {
   const l = lang === "en" ? "en" : "es";
   if (rellenando[l]) return;
@@ -160,19 +140,14 @@ async function rellenarPool(lang) {
   }
 }
 
-// Devuelve una frase del pool AL INSTANTE (sin esperar red). Si el stock bajó del
-// mínimo, dispara el rellenado en background (no await). Cae a local si está
-// vacío (APIs caídas o pool aún sin cargar al arranque).
 function getPhraseInstant(lang = "es") {
   const l = lang === "en" ? "en" : "es";
   const frase = pools[l].shift();
-  if (pools[l].length < POOL_MIN) rellenarPool(l); // background, sin await
+  if (pools[l].length < POOL_MIN) rellenarPool(l); // sin await: fire-and-forget
   return frase || getRandomSpanishPhrase();
 }
 
-// Precarga inicial + refresco periódico. Idempotente: aunque 'ready' redispare
-// tras una reconexión, el setInterval se arma una sola vez.
-let poolIniciado = false;
+let poolIniciado = false; // el setInterval se arma una sola vez pese a reintentos de 'ready'
 function iniciarPool() {
   rellenarPool("es");
   rellenarPool("en");

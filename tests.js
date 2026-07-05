@@ -10,8 +10,7 @@ const mockClient = {
 // ─── HELPER MEJORADO ──────────────────────────────────────────────────────────
 async function simulate(text, isAdminFlag = false, fromMe = false, expectedInReply = null) {
   let capturedReply = "";
-  
-  // Limpiar cache de admins para que cada test sea independiente
+
   clearAdminCache();
   
   const msg = {
@@ -90,17 +89,17 @@ async function runTests() {
     console.log(`✅ API Response: ${p.texto.slice(0, 30)}...`);
 
     console.log("\n--- Test 8: Comando Freq (Límites y DB) ---");
-    await simulate("/mbot freq 7", true, false, "1 al 6"); // Debe fallar
-    await simulate("/mbot freq 6", true, false, "Turbinas activadas"); // Debe pasar
+    await simulate("/mbot freq 7", true, false, "1 al 6");
+    await simulate("/mbot freq 6", true, false, "Turbinas activadas");
     
     const settings = db.getGroupSettings("123456789@g.us");
     if (settings.frequency !== 6) { hasFailed = true; console.error("❌ Error DB: Freq no guardada."); }
 
     console.log("\n--- Test 9: Lógica Matemática de Frecuencia ---");
     const base = "09:00";
-    const ok1 = shouldSendNow(base, 6, "09:00"); // Base
-    const ok2 = shouldSendNow(base, 6, "13:00"); // +4hs
-    const fail = shouldSendNow(base, 6, "10:00"); // No debe disparar
+    const ok1 = shouldSendNow(base, 6, "09:00");
+    const ok2 = shouldSendNow(base, 6, "13:00");
+    const fail = shouldSendNow(base, 6, "10:00");
 
     console.log("\n--- Test 10: Enviar en cada intervalo exitosamente (Freq=6, Intervalo=240min) ---");
     const base10 = "09:00";

@@ -14,9 +14,7 @@ function getTunnelUrl() {
   try {
     const fromFile = fs.readFileSync(TUNNEL_URL_FILE, "utf8").trim();
     if (fromFile) return fromFile;
-  } catch (e) {
-    // sin archivo (o ilegible) → caemos a la env var
-  }
+  } catch (e) {}
   return (process.env.TUNNEL_URL || "").trim();
 }
 

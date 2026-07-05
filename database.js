@@ -1,6 +1,6 @@
 const Database = require("better-sqlite3");
 const path = require("path");
-const crypto = require("crypto"); // 👈 Agregado para generar tokens aleatorios
+const crypto = require("crypto");
 
 const db = new Database(path.join(__dirname, "motivacional.db"));
 
@@ -11,7 +11,7 @@ db.exec(`
     group_id     TEXT UNIQUE NOT NULL,
     group_name   TEXT,
     active       INTEGER DEFAULT 1,
-    web_token    TEXT, -- 👈 Agregado aquí para nuevas instalaciones
+    web_token    TEXT,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -56,13 +56,9 @@ try {
 
 // ─── GRUPOS ───────────────────────────────────────────────────────────────────
 
-/**
- * Agrega o activa un grupo generando un token único si no tiene uno.
- */
 function addGroup(groupId, groupName) {
-  // Generamos un token aleatorio de 16 caracteres hexadecimales
-  const token = crypto.randomBytes(8).toString('hex'); 
-  
+  const token = crypto.randomBytes(8).toString('hex');
+
   const stmt = db.prepare(`
     INSERT INTO groups (group_id, group_name, active, web_token)
     VALUES (?, ?, 1, ?)
@@ -189,7 +185,6 @@ function deleteMultiplePhrases(groupId, phraseIds) {
 
 function activateCustomNow(groupId) {
   try {
-    // 🛡️ Usamos 'db' que ya está inicializada al principio del archivo
     const stmt = db.prepare("UPDATE group_settings SET use_custom = 'active' WHERE group_id = ?");
     return stmt.run(groupId);
   } catch (error) {

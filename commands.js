@@ -97,16 +97,13 @@ async function isAdmin(message, client) {
         if (contact && contact.number) {
           rawSenderId = contact.number + '@c.us';
         }
-      } catch (e) {
-        // Ignorar
-      }
+      } catch (e) {}
     }
 
     const number = rawSenderId.split('@')[0].split(':')[0];
 
     if (SUPER_ADMINS.includes(number)) return true;
 
-    // Verificar cache primero
     const groupId = message.from;
     const cached = getCachedAdmin(groupId, number);
     if (cached !== null) return cached;
@@ -130,8 +127,6 @@ async function isAdmin(message, client) {
     });
 
     const isAdminResult = participant?.isAdmin || participant?.isSuperAdmin || false;
-    
-    // Guardar en cache
     setCachedAdmin(groupId, number, isAdminResult);
     
     return isAdminResult;
@@ -210,7 +205,7 @@ async function resolverMenciones(client, msg, texto) {
     try {
       const n = nombreContacto(await client.getContactById(id));
       if (n && n !== "Anónimo") nombre = n;
-    } catch (e) { /* dejamos el id crudo */ }
+    } catch (e) {}
     out = out.split(`@${idUser}`).join(`@${nombre}`);
   }
   return out;
@@ -223,8 +218,6 @@ async function handleCommand(message, client) {
     const lowerBody = body.toLowerCase();
     const groupId = message.fromMe ? message.to : message.from;
 
-    // ─── INICIALIZACIÓN DE TABLAS ───────────────────────────────────────────────
-    // Nos aseguramos de que el grupo tenga un token generado (solo para nuevas instalaciones)
     let group = db.getGroup(groupId);
     const parts = body.split(/\s+/);
     const subcommand = (parts[1] || "").toLowerCase();
@@ -235,7 +228,6 @@ async function handleCommand(message, client) {
       const senderId = message.author || message.from;
       const number = senderId.split('@')[0].split(':')[0];
 
-      // Verificamos que seas vos y nadie más
       if (!SUPER_ADMINS.includes(number)) {
         return message.reply("⛔ Error de acceso: No tenés autorización para ejecutar protocolos de emergencia.");
       }
@@ -244,7 +236,6 @@ async function handleCommand(message, client) {
 
       console.error(`🚨 DETENCIÓN DE EMERGENCIA solicitada por ${number} a las ${new Date().toISOString()}`);
 
-      // Ejecutamos el comando de PM2 para detener los dos procesos
       exec("pm2 stop motibot cloudflare-tunnel", (error, stdout, stderr) => {
         if (error) {
           console.error(`❌ Error al ejecutar el stop: ${error.message}`);
@@ -264,7 +255,6 @@ async function handleCommand(message, client) {
       let phrase = content;
       let author = "Anónimo";
 
-      // Extraer frase y autor con Regex
       const quoteMatch = content.match(/^[""](.+?)[""](?:\s*[-–]\s*(.+))?$/);
       if (quoteMatch) {
         phrase = quoteMatch[1].trim();
@@ -284,17 +274,14 @@ async function handleCommand(message, client) {
       // múltiples en un solo espacio para que no "estiren" la tabla web.
       phrase = phrase.replace(/\s+/g, ' ').trim();
 
-      // 1. Filtro de frase muy corta
       if (!phrase || phrase.length < 5) {
         return message.reply('❌ ¡Uy, esa frase es muy cortita!\nEscribila así: `/new "Tu frase inspiradora" - Autor`');
       }
 
-      // 2. Filtro de frase gigante (Testamento)
       if (phrase.length > 300) {
         return message.reply(`❌ ¡Epa! Esa frase es un testamento de ${phrase.length} caracteres.\nPor favor, resumila a un máximo de 300 para no saturar la base de datos.`);
       }
 
-      // 🛡️ OBTENER QUIÉN AGREGÓ LA FRASE: nombre legible; si falla, "Anónimo".
       const addedBy = await nombreDeMensaje(client, message);
 
       db.addCustomPhrase(groupId, phrase, author, addedBy);
@@ -308,7 +295,7 @@ async function handleCommand(message, client) {
       }
 
       if (count >= 60 && settings?.use_custom === "pending") {
-        db.activateCustomNow(groupId); // Debés crear este método en database.js que ponga use_custom = 'active'
+        db.activateCustomNow(groupId);
         return message.reply(
           `🎊 ¡MÁXIMA PRODUCTIVIDAD! 🎊\n\nAlcanzamos las ${count} frases. Ya no hace falta esperar los 2 días. *¡El modo Custom ya está activo!* 🚀`
         );
@@ -384,22 +371,17 @@ async function handleCommand(message, client) {
       return message.reply('❓ ¡Me dejaste por la mitad! Usá `/mbot help` para ver cómo pedirme las cosas.');
     }
 
-    // 🛡️ FILTRO DE ARIDAD ESTRICTA (Solución al Bug)
     const UNKNOWN_MSG = `❓ ¡Epa! Ese comando no lo tengo en mi memoria. Usá \`/mbot help\` para ver mi manual de instrucciones.`;
 
-    // 1. Comandos que NO llevan argumentos extras (Largo exacto: 2)
+    // parts = ["/mbot", subcommand, arg?] → length 2 = sin arg extra, 3 = con arg.
     const strictNoArg = ["phrase", "status", "help", "add", "remove", "list", "stop", "time"];
-    // 2. Comandos que REQUIEREN un argumento (Largo exacto: 3)
     const needsOneArg = ["lang", "use"];
-    // 3. Comandos DUALES (Largo: 2 o 3)
     const optionalOneArg = ["clock", "freq"];
 
-    // Validamos si el usuario escribió de más o de menos según el comando
     if (strictNoArg.includes(subcommand) && parts.length !== 2) return message.reply(UNKNOWN_MSG);
     if (needsOneArg.includes(subcommand) && parts.length !== 3) return message.reply(UNKNOWN_MSG);
     if (optionalOneArg.includes(subcommand) && (parts.length < 2 || parts.length > 3)) return message.reply(UNKNOWN_MSG);
-    
-    // Si el comando ni siquiera está en nuestras listas, también rebota
+
     const allKnown = [...strictNoArg, ...needsOneArg, ...optionalOneArg];
     if (!allKnown.includes(subcommand)) return message.reply(UNKNOWN_MSG);
 
@@ -409,7 +391,6 @@ async function handleCommand(message, client) {
     }
 
     if (subcommand === "status") {
-      // 1. 🚨 DEFINICIÓN DE VARIABLES (Lo que faltaba)
       const group = db.getGroup(groupId);
       const settings = db.getGroupSettings(groupId);
       const customCount = db.countCustomPhrases(groupId);
@@ -418,17 +399,14 @@ async function handleCommand(message, client) {
         return message.reply("❌ ¡Todavía no me adoptaron en este equipo!\nAlguien con permisos tiene que usar `/mbot add`.");
       }
 
-      // 2. Lógica de estado de la librería
       let customStatus = "❌ No activada";
       if (settings?.use_custom === "pending") {
-        // Usamos la función de tiempo que definimos para los ansiosos
         const remaining = getTimeRemaining(settings.custom_start_date);
         customStatus = `⏳ Pendiente (Faltan ${remaining || "pocos minutos"})`;
       } else if (settings?.use_custom === "active") {
         customStatus = `✅ ¡A pleno! (${customCount} frases en la colección)`;
       }
 
-      // 3. Respuesta final al usuario
       return message.reply(
         `📊 *¡Acá tenés el reporte de MotiBot!* 🚀\n\n` +
         `📍 Equipo: ${group.group_name}\n` +
@@ -452,7 +430,6 @@ async function handleCommand(message, client) {
       if (settings?.use_custom === "pending") {
         const remaining = getTimeRemaining(settings.custom_start_date);
         
-        // ⚡ Si ya tienen 60 frases, el comando /mbot time activa el modo
         if (customCount >= 60) {
           db.activateCustomNow(groupId);
           return message.reply(`🔥 ¡Detección de equipo productivo! 🔥\nCon ${customCount} frases ya no hace falta esperar. *¡Modo Custom activado ahora mismo!*`);
@@ -472,7 +449,6 @@ async function handleCommand(message, client) {
           return message.reply("❌ ¡Todavía no me adoptaron! Usen `/mbot add` primero.");
         }
 
-        // 🛡️ Lógica de Cooldown: Los admins saltan la espera
         const userId = message.author || message.from;
         const now = Date.now();
 
@@ -493,21 +469,20 @@ async function handleCommand(message, client) {
           // Admin dentro del cooldown → bypass, sigue de largo
         }
 
-        // ⚙️ Verificamos la configuración del grupo
-        db.checkAndActivateCustom(groupId); // Lógica de tiempo por defecto
+        db.checkAndActivateCustom(groupId);
         const settings = db.getGroupSettings(groupId);
         let frase = null;
         let isCustom = false;
 
-        // 🚀 MODO ESTRICTO: Si está activo, SOLO busca en la librería del equipo
+        // MODO ESTRICTO: si está activo, SOLO busca en la librería del equipo —
+        // sin fallback a remotas aunque esté vacía (para eso avisa más abajo).
         if (settings?.use_custom === "active") {
           const customPhrase = db.getRandomCustomPhrase(groupId);
-          
+
           if (customPhrase) {
             frase = { texto: customPhrase.phrase, autor: customPhrase.author, source: customPhrase.source };
             isCustom = true;
           } else {
-            // Si está activo pero no hay frases, avisamos en lugar de usar externas
             return message.reply("⚠️ El modo custom está activo pero la lista del equipo está vacía. ¡Sumen frases con `/new`!");
           }
         } else {
@@ -517,7 +492,6 @@ async function handleCommand(message, client) {
           frase = getPhraseInstant(settings?.language || "es");
         }
 
-        // 🎨 Formateo del mensaje final
         const emojis = ["🌟", "💪", "🔥", "✨", "🚀", "🌈", "⚡", "🎯", "💡", "🏆"];
         const emoji = emojis[Math.floor(Math.random() * emojis.length)];
         
@@ -703,32 +677,29 @@ async function handleCommand(message, client) {
       const group = db.getGroup(groupId);
       if (!group || !group.active) return message.reply("❌ ¡Todavía no me adoptaron!");
 
-      // 1. Validación de Admin (Ya lo tenés bien)
       const adminStatus = await isAdmin(message, client);
       if (!adminStatus) {
         return message.reply("🔒 ¡Alto ahí! Solo los admins pueden pedir la llave del panel.");
       }
 
-      // 2. Link Base y Token Único. getTunnelUrl() lee la URL vigente del túnel
-      // (archivo .tunnel_url que actualiza tunnel.sh), no una env var congelada.
+      // getTunnelUrl() lee la URL vigente del túnel (archivo .tunnel_url que
+      // actualiza tunnel.sh), no una env var congelada.
       const baseUrl = getTunnelUrl();
       if (!baseUrl) {
         return message.reply("⚠️ Error de configuración: no hay URL de túnel disponible.");
       }
 
-      const token = db.getGroupToken(groupId); // 🔑 USAMOS EL TOKEN DE LA BASE DE DATOS
+      const token = db.getGroupToken(groupId);
       if (!token) {
          return message.reply("⚠️ Error: Este grupo no tiene un token de seguridad generado.");
       }
 
-      // 3. Mensaje público al grupo (Link LIMPIO, sin el token)
       await message.reply(
         `📚 *Panel de Gestión - ${group.group_name}*\n\n` +
         `Entren acá para ver las frases:\n👉 ${baseUrl}/frases/${groupId}\n\n` +
         `_(Nota: Se requiere la llave de acceso enviada al administrador)_`
       );
 
-      // 4. Mensaje Privado al Admin (Solo el Token)
       try {
         const adminId = message.author || message.from;
         await client.sendMessage(adminId, 
@@ -741,19 +712,19 @@ async function handleCommand(message, client) {
         console.error("❌ Error enviando link privado:", error);
         return message.reply("⚠️ No pude mandarte la llave por mensaje privado. ¿Me tenés bloqueado?");
       }
-      return; // Fin del comando list
+      return; // ya mandamos los dos mensajes arriba (público + token privado)
     }
 
     if (subcommand === "sync") {
-      // Solo Sora/Super Admins pueden forzar sync global
       const senderId = message.author || message.from;
       const number = senderId.split('@')[0].split(':')[0];
-      
+
       if (!SUPER_ADMINS.includes(number)) {
         return message.reply("⛔ Solo los super administradores pueden ejecutar la sincronización global.");
       }
 
-      // Importar y ejecutar syncGroups desde index.js
+      // require tardío (no al tope del archivo): index.js ya requiere este
+      // módulo, un require circular al tope devolvería un exports vacío.
       const { syncGroups } = require("./index.js");
       if (typeof syncGroups === 'function') {
         await syncGroups();

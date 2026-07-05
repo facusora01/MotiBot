@@ -11,16 +11,14 @@ const { alertarRevinculacion } = require("./notify");
 const { respaldarSesion, restaurarSesionSiHaceFalta, borrarSesionYBackup } = require("./session-backup");
 const { getTunnelUrl } = require("./tunnel-url");
 
-// ─── CONFIGURACIÓN ────────────────────────────────────────────────────────────
 const HORA_ENVIO = process.env.HORA_ENVIO || "08:00";
 
 // Perfil de Chromium que usa LocalAuth: <dataPath>/session-<clientId>
 const SESSION_DIR = path.join(__dirname, "bot_session", "session-motibot");
 
-// 🧹 Borra los locks de singleton que deja un Chromium que no cerró limpio.
-// Sin esto, al reiniciar aparece "The browser is already running ..." y el bot
-// no levanta nunca. Solo deben quedar si hay un Chromium VIVO; como en el
-// arranque el proceso es nuevo (PM2 reinició), cualquier lock es de un huérfano.
+// Limpia locks de un Chromium que no cerró bien (si no: "already running" bloquea
+// el arranque). Seguro: en el arranque el proceso es nuevo (PM2 reinició), así
+// que cualquier lock encontrado es de un huérfano.
 function limpiarLocksHuerfanos() {
   const locks = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
   for (const f of locks) {
@@ -37,10 +35,8 @@ function buildCronExpression(horaStr) {
   return `${m} ${h} * * *`;
 }
 
-// ⏱️ Envuelve una promesa con un timeout. Si no resuelve a tiempo, rechaza con un
-// Error etiquetado. NO cancela la promesa original (JS no lo permite) pero libera
-// al que la await: evita quedar pending eterno si un send/evaluate de Puppeteer
-// cuelga con la página en mal estado. El que llama decide qué hacer con el throw.
+// No cancela la promesa original (JS no lo permite), pero libera al que espera:
+// evita quedar pending eterno si Puppeteer cuelga con la página en mal estado.
 const REPLY_TIMEOUT = 30000; // 30s: un reply normal tarda <1s; 30s = trabado
 function conTimeout(promise, ms, label = "operación") {
   let t;
@@ -50,18 +46,15 @@ function conTimeout(promise, ms, label = "operación") {
   return Promise.race([promise, limite]).finally(() => clearTimeout(t));
 }
 
-// ─── FORMATO DEL MENSAJE ──────────────────────────────────────────────────────
 function formatMessage(frase, isCustom = false) {
   const emojis = ["🌟", "💪", "🔥", "✨", "🚀", "🌈", "⚡", "🎯", "💡", "🏆"];
   const emoji = emojis[Math.floor(Math.random() * emojis.length)];
   const tag = isCustom ? "⭐ *Frase del día* ⭐" : `${emoji} *Frase del día* ${emoji}`;
 
-  // 🗣️ marca las frases sumadas con /add (reply a un mensaje del grupo).
   const marca = frase.source === "add" ? "🗣️ " : "";
   return `${tag}\n\n_"${frase.texto}"_\n\n— ${marca}*${frase.autor}*`;
 }
 
-// ─── ENVÍO DIARIO ─────────────────────────────────────────────────────────────
 async function sendDailyPhrases(client, specificGroupId = null) {
   const allGroups = db.getActiveGroups();
   const groups = specificGroupId
@@ -94,8 +87,7 @@ async function sendDailyPhrases(client, specificGroupId = null) {
       }
 
       const mensaje = formatMessage(frase, isCustom);
-      // Timeout: un send trabado (página colgada) no debe frenar el resto de los
-      // grupos de este tick ni quedar pending eterno. El catch del for lo loguea.
+      // timeout: un send trabado no debe frenar el resto de los grupos de este tick.
       await conTimeout(client.sendMessage(group.group_id, mensaje), REPLY_TIMEOUT, `envío a ${group.group_name}`);
 
       const ahora = new Date().toLocaleString("es-AR");
@@ -106,59 +98,13 @@ async function sendDailyPhrases(client, specificGroupId = null) {
   }
 }
 
-// 🧹 SINCRONIZACIÓN DE GRUPOS: Desactivar grupos donde ya no estamos
-// async function syncGroups() {
-//   try {
-//     console.log("🔄 Sincronizando grupos con WhatsApp...");
-//     
-//     // Obtener todos los chats activos de WhatsApp
-//     const chats = await client.getChats();
-//     const activeChatIds = new Set(
-//       chats
-//         .filter(chat => chat.isGroup)
-//         .map(chat => chat.id._serialized)
-//     );
-
-//     // 🛡️ SEGURIDAD: Si no se obtuvieron chats válidos, abortar
-//     if (activeChatIds.size === 0) {
-//       console.warn("⚠️ No se obtuvieron grupos de WhatsApp. Posible timeout o error de conexión.");
-//       console.warn("   Se omite la limpieza para evitar desactivar grupos activos por error.");
-//       return;
-//     }
-
-//     // Obtener grupos activos en la base de datos
-//     const dbGroups = db.getActiveGroups();
-//     let removedCount = 0;
-
-//     for (const group of dbGroups) {
-//       if (!activeChatIds.has(group.group_id)) {
-//         // El bot ya no está en este grupo - desactivarlo
-//         db.removeGroup(group.group_id);
-//         console.log(`   🗑️ Desactivado: ${group.group_name} (ya no estamos en el grupo)`);
-//         removedCount++;
-//       }
-//     }
-
-//     if (removedCount > 0) {
-//       console.log(`✅ Se limpiaron ${removedCount} grupo(s) obsoleto(s)\n`);
-//     } else {
-//       console.log(`✅ Todos los grupos están sincronizados\n`);
-//     }
-//   } catch (error) {
-//     console.error("⚠️ Error en syncGroups (se omite limpieza):", error.message);
-//     // NO desactivamos grupos si hay error - es más seguro mantenerlos activos
-//   }
-// }
-
-// Función vacía temporal mientras la sincronización está desactivada
+// Sincronización de grupos desactivada temporalmente.
 async function syncGroups() {
   console.log("🔄 Sincronización de grupos desactivada.");
 }
 
-// ─── CLIENTE WHATSAPP ─────────────────────────────────────────────────────────
-// Buscá la sección del cliente en index.js y agregá estos flags
 const client = new Client({
-  authStrategy: new LocalAuth({ 
+  authStrategy: new LocalAuth({
     clientId: "motibot",
     dataPath: "./bot_session"
   }),
@@ -181,28 +127,19 @@ const client = new Client({
   },
 });
 
-// ─── ESTADO DE RE-VINCULACIÓN ─────────────────────────────────────────────────
-// Cuando el bot pierde sesión necesita re-vincularse. El código de pairing se
-// genera EN VIVO en /pair (expira cada ~3min). Por mail solo va el aviso + link.
+// El código de pairing se genera EN VIVO en /pair (expira cada ~3min); por mail
+// solo va el aviso + link.
 const PAIR_TOKEN = process.env.PAIR_TOKEN || "";
-// Marcador en disco: indica que el bot YA se vinculó alguna vez. Vive en
-// bot_session/ pero FUERA de session-motibot/, así sobrevive al logout (que
-// borra session-motibot). Sirve para distinguir "primer setup manual" (no
-// alarmar) de "re-vinculación tras perder sesión" (sí alarmar), entre reinicios.
+// Vive fuera de session-motibot/ (sobrevive al logout) para distinguir primer
+// setup (no alarmar) de re-vinculación tras perder sesión (sí alarmar).
 const LINKED_MARKER = path.join(__dirname, "bot_session", ".was_linked");
 
-// ─── AUTO-LIMPIEZA DE SESIÓN MUERTA ───────────────────────────────────────────
-// Tras un LOGOUT (o inestabilidad repetida) la sesión guardada queda inválida:
-// WhatsApp la rechaza y el bot entra en loop de re-inject ("Target closed" /
-// "Execution context destroyed"), reiniciándose sin recuperarse nunca.
-// Contamos los reinicios inestables seguidos en disco. Si se acumulan, borramos
-// sesión + backup antes del próximo arranque → boot limpio (UNPAIRED → QR nuevo).
-// El contador se resetea solo tras 5 min de conexión estable (ver 'ready'), así
-// un evento transitorio aislado NO escala al borrado. Ambos marcadores viven
-// fuera de session-motibot/ para sobrevivir al wipe.
+// Tras LOGOUT o inestabilidad repetida la sesión queda inválida y reiniciar sin
+// más solo repite el loop de re-inject. Contamos reinicios inestables seguidos
+// (marcador en disco); al límite, borramos sesión+backup antes del próximo boot.
 const CLEAN_FLAG = path.join(__dirname, "bot_session", ".clean_on_boot");
 const UNSTABLE_COUNTER = path.join(__dirname, "bot_session", ".unstable_count");
-const LIMITE_INESTABLE = 2; // reinicios inestables seguidos antes de borrar sesión
+const LIMITE_INESTABLE = 2;
 
 function leerContadorInestable() {
   try { return parseInt(fs.readFileSync(UNSTABLE_COUNTER, "utf8"), 10) || 0; }
@@ -212,13 +149,9 @@ function resetContadorInestable() {
   try { fs.rmSync(UNSTABLE_COUNTER, { force: true }); } catch (e) { /* nada */ }
 }
 
-// 📞 Número del bot para pedir el pairing code. Lo persistimos en 'ready' desde
-// client.info.wid (el número de la sesión conectada), también fuera de
-// session-motibot para que sobreviva al logout. Prioridad al leerlo:
-//   1. BOT_PHONE del .env (si lo querés hardcodear).
-//   2. Número de la última sesión conectada (este marcador).
-// Así, tras vincular una vez por QR, las re-vinculaciones por código ya saben el
-// número solas — sin necesidad de BOT_PHONE en el .env.
+// Persistido en 'ready' desde client.info.wid, fuera de session-motibot/ para
+// sobrevivir al logout. Prioridad: BOT_PHONE del .env, si no, este marcador —
+// así tras el primer QR las siguientes re-vinculaciones no necesitan el .env.
 const BOT_PHONE_MARKER = path.join(__dirname, "bot_session", ".bot_phone");
 function getBotPhone() {
   const env = (process.env.BOT_PHONE || "").replace(/\D/g, "");
@@ -235,8 +168,7 @@ let estuvoReady = false;      // ya estuvo conectado al menos una vez
 let alertaEnviada = false;    // evita spamear mails
 let pairingSolicitado = false;// evita pedir code en cada qr
 
-// 📱 Pide el código de pairing. En modo QR la función page-side que devuelve el
-// código NO está expuesta, así que la exponemos nosotros antes de pedirlo.
+// En modo QR la función page-side que devuelve el código no está expuesta.
 async function pedirPairingCode() {
   try {
     try {
@@ -244,9 +176,7 @@ async function pedirPairingCode() {
         client.emit("code", code);
         return code;
       });
-    } catch (e) {
-      // Ya estaba expuesta en esta página → ok, seguimos.
-    }
+    } catch (e) {} // ya estaba expuesta en esta página
     await client.requestPairingCode(getBotPhone());
   } catch (e) {
     console.error(`⚠️ No pude pedir pairing code: ${e?.name || ""} ${e?.message || e}`);
@@ -254,14 +184,9 @@ async function pedirPairingCode() {
   }
 }
 
-// 🚨 Manda la alerta de re-vinculación por mail, una sola vez por episodio.
-// Solo si el bot YA estuvo vinculado antes — sea en este proceso (estuvoReady) o
-// en uno previo (marcador en disco, sobrevive al reinicio tras logout). En el
-// primer setup manual NO alarmamos (estás presente vos). 'alertaEnviada' se
-// resetea en 'ready', así cada nuevo episodio de desvinculación avisa de nuevo.
-// IMPORTANTE: se llama desde 'qr' Y desde el LOGOUT de 'disconnected'. Antes
-// colgaba solo del 'qr', pero si el inject post-logout crashea ("Execution
-// context destroyed"), el 'qr' nunca se emite → no llegaba ningún mail.
+// Una alerta por episodio (alertaEnviada resetea en 'ready'). Se llama desde
+// 'qr' Y desde el LOGOUT: si el inject post-logout crashea, 'qr' nunca se
+// emite y sin esto no llegaría ningún mail.
 function dispararAlertaRevinculacion() {
   const yaVinculado = estuvoReady || fs.existsSync(LINKED_MARKER);
   if (!yaVinculado || alertaEnviada) return;
@@ -279,14 +204,12 @@ client.on("qr", (qr) => {
   console.log("==========================================\n");
   qrcode.generate(qr, { small: true });
 
-  // ⚠️ NO pedimos pairing code acá automáticamente: requestPairingCode navega la
-  // página (initializeAltDeviceLinking) y puede gatillar el loop de post_logout.
-  // El pairing es OPT-IN: solo cuando abrís /pair (estás presente re-vinculando).
+  // Pairing es opt-in (solo al abrir /pair): pedirlo acá navegaría la página y
+  // podría gatillar el loop post-logout.
 
   dispararAlertaRevinculacion();
 });
 
-// WhatsApp entrega/renueva el código de 8 dígitos por acá.
 client.on("code", (code) => {
   ultimoPairingCode = code;
   console.log(`🔑 Código de vinculación vigente: ${code}`);
@@ -299,8 +222,7 @@ let cronRegistrado = false;
 let ultimoReadyTs = 0;
 let backupProgramado = false;
 
-// Programa el respaldo de la sesión: uno diferido 30s (que se asiente) y luego
-// uno periódico cada 6h. Idempotente: aunque 'ready' redispare, agenda una vez.
+// Backup diferido 30s + periódico cada 6h; idempotente pese a redisparos de 'ready'.
 function programarBackupSesion() {
   if (backupProgramado) return;
   backupProgramado = true;
@@ -309,37 +231,32 @@ function programarBackupSesion() {
 }
 
 client.on("ready", async () => {
-  // La librería emite 'ready' varias veces en ráfaga tras re-inyecciones.
-  // Colapsamos la ráfaga para no repetir logs ni trabajo.
+  // 'ready' puede emitirse en ráfaga tras re-inyecciones; colapsamos para no
+  // repetir trabajo.
   const ahoraTs = Date.now();
   if (ahoraTs - ultimoReadyTs < 10000) return;
   ultimoReadyTs = ahoraTs;
 
   console.log("🤖 Bot listo y conectado a WhatsApp!\n");
 
-  // ✅ Conectado: reseteamos el estado de re-vinculación.
   necesitaAuth = false;
   estuvoReady = true;
   alertaEnviada = false;
   pairingSolicitado = false;
   ultimoPairingCode = null;
 
-  // 🧹 Conexión estable: si seguimos arriba 5 min, la sesión es sana → reseteamos
-  // el contador de inestabilidad. NO lo reseteamos al instante: en el loop de
-  // sesión muerta 'ready' dispara brevemente antes de romperse, y un reset
-  // inmediato impediría escalar al borrado. Si el proceso reinicia antes de los
-  // 5 min, el timer muere y el contador persiste → escala. unref: no bloquea.
+  // Reset diferido 5 min: en el loop de sesión muerta 'ready' dispara brevemente
+  // antes de romperse — resetear al instante nunca dejaría escalar al borrado.
   setTimeout(() => { if (!cerrando) resetContadorInestable(); }, 5 * 60 * 1000).unref();
 
-  // Dejamos el marcador: a partir de acá, cualquier QR futuro = re-vinculación
-  // (no primer setup) → dispara el mail aunque sea en otro proceso tras reinicio.
+  // A partir de acá, cualquier QR futuro es re-vinculación (dispara el mail).
   try {
     fs.writeFileSync(LINKED_MARKER, new Date().toISOString());
   } catch (e) {
     console.warn("⚠️ No pude escribir el marcador de vinculación:", e.message);
   }
 
-  // código (pairing) sin necesidad de BOT_PHONE en el .env.
+  // Persistimos el número de esta sesión para futuras re-vinculaciones por código.
   try {
     const num = String(client.info?.wid?.user || "").replace(/\D/g, "");
     if (num) fs.writeFileSync(BOT_PHONE_MARKER, num);
@@ -347,29 +264,21 @@ client.on("ready", async () => {
     console.warn("⚠️ No pude guardar el número del bot:", e.message);
   }
 
-  // 💾 Sesión estable → la respaldamos para poder restaurarla si el perfil se
-  // corrompe/pierde en un reinicio (evita re-pedir QR). Una vez por proceso + 6h.
+  // Backup para poder restaurar la sesión si el perfil se corrompe/pierde en un reinicio.
   programarBackupSesion();
 
-  // 🐕 Watchdog anti-cuelgue silencioso: a veces la página WA queda en estado
-  // TIMEOUT/reconexión SIN emitir 'disconnected'. El bot sigue detectando
-  // mensajes (event loop vivo) pero los reply() quedan pending para siempre.
-  // El watchdog sondea getState() y reinicia si deja de estar CONNECTED.
   armarWatchdog();
 
-  // 🎯 Pre-cargamos el pool de frases remotas para que /mbot phrase responda al
-  // instante. iniciarPool es idempotente (rellenarPool tiene guard), seguro si
-  // 'ready' redispara tras reconexión.
+  // Pre-cargamos el pool para que /mbot phrase responda al instante; idempotente.
   iniciarPool();
 
-  // 🧹 SINCRONIZACIÓN DE GRUPOS: Limpiar grupos donde ya no estamos
   await syncGroups();
 
   const groups = db.getActiveGroups();
   console.log(`📋 Grupos activos: ${groups.length}`);
   groups.forEach((g) => console.log(`   • ${g.group_name} (${g.group_id})`));
 
-  // 🛡️ Si ready re-dispara tras reconexión, NO apilamos otro cron
+  // Evita apilar otro cron si 'ready' redispara tras reconexión.
   if (cronRegistrado) {
     console.log("⏭️  Cron ya registrado, omito re-registro.");
     return;
@@ -378,11 +287,8 @@ client.on("ready", async () => {
 
   console.log(`\n📅 Scheduler iniciado\n`);
 
-  // Corre cada minuto y verifica qué grupos hay que enviar
-  // Actualización necesaria en index.js
   cron.schedule("* * * * *", async () => {
-  // 🛡️ Try/catch global del tick: un grupo con datos corruptos NUNCA
-  // debe tirar un unhandledRejection ni romper el resto de los envíos.
+  // un grupo con datos corruptos no debe tirar unhandledRejection ni romper el tick.
   try {
     const now = new Date().toLocaleTimeString("es-AR", {
       timeZone: "America/Argentina/Buenos_Aires",
@@ -391,13 +297,11 @@ client.on("ready", async () => {
 
     const activeGroups = db.getActiveGroups();
     for (const group of activeGroups) {
-      // 🛡️ settings puede ser undefined si el grupo no tiene fila en group_settings.
-      // Sin este guard, `settings.send_time` lanzaba TypeError y mataba el tick.
+      // settings puede ser undefined si el grupo no tiene fila en group_settings.
       const settings = db.getGroupSettings(group.group_id);
       const baseTime = settings?.send_time || "08:00";
       const freq = settings?.frequency || 1;
 
-      // 🧮 Cálculo de slots
       const [h, m] = baseTime.split(':').map(Number);
       const baseTotal = h * 60 + m;
       const interval = Math.floor(1440 / freq);
@@ -405,7 +309,6 @@ client.on("ready", async () => {
       const [nowH, nowM] = now.split(':').map(Number);
       const nowTotal = nowH * 60 + nowM;
 
-      // Buscamos si el minuto actual coincide con algún slot del ciclo
       for (let i = 0; i < freq; i++) {
         const slot = (baseTotal + (i * interval)) % 1440;
         if (nowTotal === slot) {
@@ -420,10 +323,8 @@ client.on("ready", async () => {
 }, { timezone: "America/Argentina/Buenos_Aires" });
 });
 
-// ─── DEDUP DE MENSAJES ────────────────────────────────────────────────────────
-// Tras reconexiones, whatsapp-web.js re-inyecta la página y acumula hooks: el
-// MISMO mensaje se entrega varias veces → comandos y respuestas duplicados.
-// Procesamos cada id de mensaje una sola vez.
+// Tras reconexiones, whatsapp-web.js reinyecta la página y duplica hooks: el
+// mismo mensaje se entrega varias veces. Procesamos cada id una sola vez.
 const mensajesVistos = new Map(); // id -> timestamp
 function yaProcesado(id) {
   if (!id) return false;
@@ -438,61 +339,45 @@ setInterval(() => {
   }
 }, 2 * 60 * 1000).unref();
 
-// ⏪ ANTI-BACKLOG: marca temporal del arranque del proceso (en segundos, como los
-// timestamps de WhatsApp). Restamos un margen por desfasaje de reloj para no
-// perder comandos legítimos enviados justo antes de levantar.
+// Marca de arranque (con margen por desfasaje de reloj): ignora comandos viejos
+// que whatsapp-web.js re-dispara al sincronizar el historial.
 const ARRANQUE_TS = Math.floor(Date.now() / 1000) - 60;
 
-// 🔁 Reinicio por reply trabado: el síntoma clásico (visto en logs) es que la
-// página WA queda medio-muerta —detecta comandos pero CADA respuesta vence por
-// timeout ("Runtime.callFunctionOn timed out")—. Contamos los timeouts seguidos
-// y reiniciamos. Es el mismo mal que cubre el watchdog de getState, pero se
-// detecta desde el lado del envío, sin esperar el sondeo de 60s.
+// Mismo síntoma que cubre el watchdog (página colgada), detectado del lado del
+// envío: si CADA reply vence por timeout, no hace falta esperar el sondeo de 60s.
 let timeoutsReplySeguidos = 0;
 const MAX_TIMEOUTS_REPLY = 3;
 
-// ─── HANDLER DE MENSAJES ──────────────────────────────────────────────────────
 async function processMessage(message) {
-  // Al levantar, whatsapp-web.js re-dispara message_create por TODOS los mensajes
-  // viejos (sincronización). Ignoramos lo anterior al arranque: ni re-ejecutamos
-  // comandos viejos ni gastamos recursos procesando historial.
   if (message.timestamp && message.timestamp < ARRANQUE_TS) return;
 
   const body = message.body?.trim() || "";
 
-  // 🛡️ 1. CORTE MAESTRO: Si no empieza con "/" o es un testamento (> 450 caracteres), afuera.
-  // Usamos 450 para dar aire a: comando (10) + frase (300) + autor (50) + comillas/guiones.
+  // 450 = comando(10) + frase(300) + autor(50) + margen de comillas/guiones.
   if (!body.startsWith("/") || body.length > 450) return;
 
   const from = message.from;
 
   try {
-    // 2. Filtro de origen: Solo aceptamos de grupos o identificadores @lid
     if (!from.endsWith("@g.us") && !from.endsWith("@lid")) return;
 
-    // 3. Filtro de comandos: Solo pasamos si es /mbot, /new o /add (reply)
     const lowerBody = body.toLowerCase();
     const esAdd = lowerBody === "/add" || lowerBody.startsWith("/add ");
     if (!lowerBody.startsWith("/mbot") && !lowerBody.startsWith("/new ") && !esAdd) return;
 
-    // 3.5 Dedup: si el mismo comando ya se procesó (entrega duplicada tras
-    // reconexión), lo ignoramos. Evita respuestas y envíos repetidos.
     const msgId = message.id?._serialized || message.id?.id;
     if (yaProcesado(msgId)) return;
 
-    // 4. Log Seguro: Ya sabemos que "body" es corto, pero igual lo recortamos para la consola
     const logBody = body.length > 100 ? body.slice(0, 100) + "... (recortado)" : body;
-    
+
     console.log(`\n🚀 [${new Date().toLocaleTimeString("es-AR")}] Comando detectado de ${from}: "${logBody}"`);
 
-    // Timeout: si reply() cuelga (página WA trabada) no quedamos pending eterno.
     await conTimeout(handleCommand(message, client), REPLY_TIMEOUT, `comando "${logBody}"`);
     timeoutsReplySeguidos = 0; // respondió ok → la página está sana
   } catch (error) {
     console.error("❌ Error en processMessage:", error.message);
 
-    // Si el error es un timeout/target-closed y NO estamos re-vinculando, lo
-    // contamos: varios seguidos = página colgada → reinicio limpio (PM2 levanta).
+    // timeout/target-closed repetido (sin estar re-vinculando) = página colgada.
     const esTimeout = /excedió|timed out|Target closed/i.test(error.message || "");
     if (esTimeout && !necesitaAuth && !cerrando) {
       timeoutsReplySeguidos++;
@@ -506,17 +391,14 @@ async function processMessage(message) {
 
 client.on("message_create", processMessage);
 
-// 1. Cierre limpio: destruimos el cliente (cierra Chromium → libera el lock del
-//    perfil) ANTES de salir. Si solo hacemos process.exit, el Chromium queda
-//    huérfano sosteniendo SingletonLock y el próximo arranque falla con
-//    "The browser is already running ...".
+// Destruimos el cliente (cierra Chromium, libera el lock) ANTES de salir — si
+// no, queda huérfano con SingletonLock y el próximo arranque falla.
 let cerrando = false;
 async function cerrarLimpio(code, motivo) {
-  if (cerrando) return; // Evita cierres múltiples en ráfaga
+  if (cerrando) return; // evita cierres múltiples en ráfaga
   cerrando = true;
   console.error(`🛑 Cerrando proceso (${motivo}). Liberando Chromium...`);
 
-  // Carrera contra reloj: si destroy() cuelga (página rota), forzamos exit a los 8s.
   const forzar = setTimeout(() => {
     console.error("⏱️ destroy() tardó demasiado, forzando salida.");
     process.exit(code);
@@ -528,15 +410,13 @@ async function cerrarLimpio(code, motivo) {
     console.error("⚠️ Error al destruir el cliente:", e.message);
   } finally {
     clearTimeout(forzar);
-    limpiarLocksHuerfanos(); // Por las dudas, dejamos el perfil sin locks
+    limpiarLocksHuerfanos();
     process.exit(code);
   }
 }
 
-// Reinicio por inestabilidad (watchdog colgado o LOGOUT). Incrementa el contador
-// en disco; si llega al límite, marca la sesión para borrarse en el próximo boot
-// (la sesión está muerta y reiniciar sin limpiar solo repite el loop). Si no,
-// reinicia normal y deja que PM2 levante: un evento aislado se recupera solo.
+// Al límite marca la sesión para borrar en el próximo boot (reiniciar sin
+// limpiar solo repite el loop); si no, reinicio normal y que PM2 levante.
 function escalarReinicioInestable(motivo) {
   const n = leerContadorInestable() + 1;
   try { fs.writeFileSync(UNSTABLE_COUNTER, String(n)); } catch (e) { /* nada */ }
@@ -555,45 +435,32 @@ client.on("disconnected", (reason) => {
   const ts = new Date().toISOString();
   console.error(`❌ [${ts}] Bot desconectado. Razón: ${reason}`);
 
-  // ⚠️ LOGOUT: la sesión se invalidó (cierre desde el cel, ban, o WhatsApp Web
-  // abierto en otro lado). Antes NO salíamos acá, esperando que la lib se
-  // recuperara sola mostrando un QR nuevo — pero esa "auto-recuperación" entra en
-  // un loop de re-inject ("Target closed") que NUNCA se cura porque restauramos
-  // la misma sesión muerta. Ahora escalamos a reinicio: el contador de
-  // inestabilidad termina borrando la sesión muerta → arranque limpio con QR.
+  // Antes esperábamos que la lib se recuperara sola mostrando QR de nuevo, pero
+  // esa "auto-recuperación" entra en loop de re-inject porque restauramos la
+  // misma sesión muerta. Ahora escalamos: el contador termina borrándola.
   if (String(reason).toUpperCase().includes("LOGOUT")) {
     console.error("🚨 Sesión invalidada (LOGOUT). Reinicio limpio; si insiste, borro la sesión muerta para re-vincular.");
     necesitaAuth = true;
     estuvoReady = false;
     pairingSolicitado = false;
     ultimoPairingCode = null;
-    // 📧 Mandamos el mail ACÁ, no esperamos al 'qr': si el inject post-logout
-    // crashea, el 'qr' nunca se emite y nos quedábamos sin aviso. (estuvoReady ya
-    // está en false, pero el marcador en disco hace que yaVinculado siga true.)
     dispararAlertaRevinculacion();
     escalarReinicioInestable("disconnected: LOGOUT");
     return;
   }
 
-  // Otros motivos (conflicto de red, etc.): la lib no se recupera sola → salimos
-  // limpio y dejamos que PM2 reinicie con backoff.
+  // otros motivos: la lib no se recupera sola → salimos y PM2 reinicia con backoff.
   cerrarLimpio(1, `disconnected: ${reason}`);
 });
 
-// ─── WATCHDOG ANTI-CUELGUE SILENCIOSO ─────────────────────────────────────────
-// Síntoma que cubre: el bot detecta comandos pero nunca responde (reply queda
-// pending eterno) y NO se dispara 'disconnected'. Causa: la página WA entró en
-// estado != CONNECTED (TIMEOUT, OPENING colgado) con el websocket medio-vivo.
-// Como no hay evento, la lib no se auto-recupera → quedaría colgado indefinido.
-// Solución: sondear getState() y, si no vuelve CONNECTED en chequeos seguidos,
-// reiniciar limpio para que PM2 levante con la página sana.
+// El bot puede detectar mensajes con la página en estado != CONNECTED (TIMEOUT,
+// OPENING) sin que se dispare 'disconnected' — los replies quedan pending eterno.
+// Sondeamos getState(); si no vuelve CONNECTED en 2 chequeos, escalamos reinicio.
 const WATCHDOG_INTERVAL = 60 * 1000; // sondeo cada 60s
 const WATCHDOG_TOLERANCIA = 2;       // fallos seguidos (~2min) antes de reiniciar
 let fallosWatchdog = 0;
 let watchdogArmado = false;
 
-// getState() hace page.evaluate; si la página está colgada, también cuelga. Lo
-// corremos con timeout para que el propio watchdog no se cuelgue esperándolo.
 function getStateConTimeout(ms = 15000) {
   return conTimeout(client.getState(), ms, "getState");
 }
@@ -602,9 +469,7 @@ function armarWatchdog() {
   if (watchdogArmado) return; // idempotente: 'ready' puede redisparar
   watchdogArmado = true;
   setInterval(async () => {
-    // Mientras esperamos re-vinculación el estado NO es CONNECTED a propósito
-    // (UNPAIRED). Tampoco molestamos si ya estamos cerrando. En ambos casos
-    // reseteamos el contador para no arrastrar fallos previos.
+    // esperando re-vinculación (UNPAIRED) o cerrando: no cuenta como fallo.
     if (necesitaAuth || cerrando) { fallosWatchdog = 0; return; }
 
     let estado;
@@ -626,21 +491,18 @@ function armarWatchdog() {
       console.error(`🐕 Watchdog: página colgada (estado="${estado}").`);
       escalarReinicioInestable(`watchdog: estado ${estado}`);
     }
-  }, WATCHDOG_INTERVAL).unref(); // unref: no bloquea el cierre del proceso
+  }, WATCHDOG_INTERVAL).unref();
 }
 
-// Señales de PM2 (reload/stop): cerramos Chromium limpio para no dejar huérfanos.
 process.on("SIGINT", () => cerrarLimpio(0, "SIGINT"));
 process.on("SIGTERM", () => cerrarLimpio(0, "SIGTERM"));
 
-// 2. CAPA DE SEGURIDAD GLOBAL
+// Ocurre al inicializar cuando WhatsApp navega y destruye el contexto de
+// Puppeteer; inofensivo si ya está 'ready'. Si pasa durante initialize(), lo
+// maneja el catch de startBot().
 process.on('unhandledRejection', (reason, promise) => {
     const msg = reason?.message || "";
 
-    // Este error ocurre durante la inicialización cuando WhatsApp
-    // navega la página y destruye el contexto de Puppeteer.
-    // NO hacemos exit aquí: si ya estamos listos (ready), es inofensivo.
-    // Si ocurre durante initialize(), el bloque catch de startBot() lo maneja.
     if (msg.includes('Execution context was destroyed')) {
         console.warn('⚠️ Contexto de Puppeteer destruido (ignorado si el bot ya está listo).');
         return;
@@ -650,16 +512,13 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 
-// ─── SERVIDOR WEB (EXPRESS) ───────────────────────────────────────────────────
 const express = require("express");
 const app = express();
 app.use(express.json());
-// Puerto propio (3001) para NO chocar con otros servicios del mismo server (p.ej.
-// WebAmankay usa el 3000). Configurable por env. Si cambia, ajustá también el
-// túnel de Cloudflare en deploy.yml (--url http://localhost:<PORT>).
+// Puerto propio (no choca con otros servicios del server, p.ej. WebAmankay=3000).
+// Si cambia, ajustar también el túnel de Cloudflare en deploy.yml.
 const PORT = process.env.PORT || 3001;
 
-// 🛡️ 1. Función para neutralizar scripts maliciosos (XSS)
 function safeHTML(str) {
   if (!str) return "";
   const map = {
@@ -672,7 +531,6 @@ function safeHTML(str) {
   return str.replace(/[&<>"']/g, m => map[m]);
 }
 
-// ─── PANEL WEB (GESTIÓN DE FRASES) ───────────────────────────────────────────
 app.get("/frases/:groupId", (req, res) => {
   const { groupId } = req.params;
   const { key } = req.query;
@@ -681,7 +539,6 @@ app.get("/frases/:groupId", (req, res) => {
 
   if (!group) return res.status(404).send("<h1 style='text-align:center;'>Grupo no encontrado</h1>");
 
-  // 🛡️ 1. PANTALLA DE LOGIN (Si no hay llave o es incorrecta)
   if (!key || key !== groupToken) {
     return res.send(`
       <!DOCTYPE html>
@@ -720,7 +577,6 @@ app.get("/frases/:groupId", (req, res) => {
     `);
   }
 
-  // 🔓 2. PANEL PRINCIPAL (Si la llave es correcta)
   const frases = db.getCustomPhrasesList(groupId);
   res.send(`
     <!DOCTYPE html>
@@ -784,7 +640,7 @@ app.get("/frases/:groupId", (req, res) => {
           if(!confirm('¿Borrar frases seleccionadas?')) return;
           const ids = Array.from(document.querySelectorAll('.p-cb:checked')).map(c => c.value);
           const key = new URLSearchParams(window.location.search).get('key') || localStorage.getItem('mbot_key_${groupId}');
-          
+
           try {
             const res = await fetch(window.location.pathname, {
               method: 'DELETE',
@@ -805,7 +661,6 @@ app.get("/frases/:groupId", (req, res) => {
   `);
 });
 
-// ─── API: BORRADO MÚLTIPLE (Única versión válida) ───────────────────────────
 app.delete("/frases/:groupId", (req, res) => {
   const { groupId } = req.params;
   const { phraseIds, key } = req.body;
@@ -828,14 +683,12 @@ app.delete("/frases/:groupId", (req, res) => {
   }
 });
 
-// ─── PÁGINA DE RE-VINCULACIÓN ────────────────────────────────────────────────
 // Muestra el código de pairing EN VIVO. El mail manda acá. Token-protegida.
 app.get("/pair", (req, res) => {
   if (!PAIR_TOKEN || req.query.key !== PAIR_TOKEN) {
     return res.status(401).send("<h1 style='font-family:sans-serif;text-align:center'>🔒 Acceso denegado</h1>");
   }
 
-  // Ya conectado: nada que hacer.
   if (!necesitaAuth) {
     return res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -845,8 +698,8 @@ app.get("/pair", (req, res) => {
       </body></html>`);
   }
 
-  // 📱 Pairing ON-DEMAND: lo pedimos solo cuando alguien abre esta página (con el
-  // token), no en el flujo automático de QR. Así el bot no se desestabiliza solo.
+  // Opt-in: solo pedimos código al abrir esta página (con el token), no en el
+  // flujo automático de QR, para no desestabilizar el bot solo.
   if (getBotPhone() && !pairingSolicitado) {
     pairingSolicitado = true;
     pedirPairingCode();
@@ -872,7 +725,7 @@ app.get("/pair", (req, res) => {
     </body></html>`);
 });
 
-// ─── HEALTH CHECK (para monitor externo: UptimeRobot/healthchecks) ────────────
+// Monitor externo (UptimeRobot/healthchecks) hace ping acá.
 app.get("/health", (req, res) => {
   res.status(necesitaAuth ? 503 : 200).json({
     connected: !necesitaAuth,
@@ -883,13 +736,11 @@ app.get("/health", (req, res) => {
 
 app.listen(PORT, () => console.log(`🌐 Servidor Web activo en puerto ${PORT}`));
 
-// ─── INICIO CON REINTENTOS ────────────────────────────────────────────────────
-console.log("🚀 Iniciando MotivacionalBot v2...");
+console.log("🚀 Iniciando MotiBot...");
 
 async function startBot(intentos = 3, demora = 8000) {
-  // 🧹 Si un ciclo previo marcó la sesión como muerta (LOGOUT o inestabilidad
-  // repetida), la borramos ANTES de restaurar: si no, restauraríamos el cadáver y
-  // volveríamos al loop de re-inject. Sin sesión → arranque limpio (UNPAIRED→QR).
+  // Si un ciclo previo marcó la sesión como muerta, la borramos ANTES de
+  // restaurar — si no, restauraríamos el cadáver y volveríamos al loop.
   if (fs.existsSync(CLEAN_FLAG)) {
     console.warn("🧹 Marca de limpieza presente: borro sesión muerta + backup para arranque limpio.");
     borrarSesionYBackup();
@@ -897,21 +748,18 @@ async function startBot(intentos = 3, demora = 8000) {
     resetContadorInestable();
   }
 
-  // 💾 Si el perfil vivo perdió la sesión pero hay backup, lo restauramos antes
-  // de inicializar — así recuperamos el login en vez de caer en el QR.
+  // Si el perfil vivo perdió la sesión pero hay backup, restauramos antes de
+  // inicializar y evitamos el QR.
   restaurarSesionSiHaceFalta();
 
   for (let i = 1; i <= intentos; i++) {
-    // 🧹 Antes de cada intento limpiamos locks de un Chromium que no cerró bien.
     limpiarLocksHuerfanos();
 
     try {
       await client.initialize();
-      return; // Éxito
+      return;
     } catch (err) {
       const msg = err.message || "";
-      // Errores recuperables: contexto destruido, perfil bloqueado por huérfano,
-      // o Chromium lento en publicar el WS endpoint. En todos, reintentar ayuda.
       const recuperable =
         msg.includes("Execution context was destroyed") ||
         msg.includes("browser is already running") ||
@@ -921,7 +769,7 @@ async function startBot(intentos = 3, demora = 8000) {
         console.warn(`⚠️ Error recuperable en intento ${i}/${intentos} (${msg.slice(0, 60)}). Reintentando en ${demora / 1000}s...`);
         await new Promise(r => setTimeout(r, demora));
       } else {
-        // Sin más intentos → dejamos que PM2 reinicie (con backoff del ecosystem)
+        // sin más intentos → dejamos que PM2 reinicie con backoff.
         console.error(`❌ Error fatal en initialize() (intento ${i}/${intentos}):`, msg);
         process.exit(1);
       }

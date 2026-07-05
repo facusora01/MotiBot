@@ -1,15 +1,7 @@
-// ─── ALERTAS POR EMAIL ────────────────────────────────────────────────────────
-// Manda un mail cuando el bot pierde la sesión y necesita re-vincularse.
-// El mail es solo el AVISO + link; el código de vinculación se genera en vivo
-// en /pair (porque expira en ~3min y un código mandado de madrugada llega vencido).
 const nodemailer = require("nodemailer");
 
-// Config por .env. Ejemplo para Gmail:
-//   SMTP_HOST=smtp.gmail.com
-//   SMTP_PORT=465
-//   SMTP_USER=tucuenta@gmail.com
-//   SMTP_PASS=<app password de 16 letras>   (NO tu clave normal)
-//   ALERT_TO=tucuenta@gmail.com
+// Config esperada en .env: SMTP_HOST/PORT/USER/PASS (PASS = app password de
+// Gmail, no tu clave normal) y ALERT_TO. Ver env.example.
 function getTransport() {
   const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
   if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) return null;
@@ -19,17 +11,11 @@ function getTransport() {
     host: SMTP_HOST,
     port,
     secure: port === 465, // 465 = SSL; 587 = STARTTLS
-    // Gmail muestra el app password con espacios ("xxxx xxxx xxxx xxxx");
-    // los sacamos para que funcione tal cual lo copiás.
-    auth: { user: SMTP_USER, pass: (SMTP_PASS || "").replace(/\s/g, "") },
+    auth: { user: SMTP_USER, pass: (SMTP_PASS || "").replace(/\s/g, "") }, // Gmail lo copia con espacios
   });
 }
 
-/**
- * Envía la alerta de re-vinculación. No tira si falla (solo loguea): nunca debe
- * tumbar el bot por un problema de mail.
- * @param {string} pairUrl - Link a la página /pair con el código en vivo.
- */
+// No tira si falla (solo loguea): un problema de mail no debe tumbar el bot.
 async function alertarRevinculacion(pairUrl) {
   const transport = getTransport();
   const to = process.env.ALERT_TO || process.env.SMTP_USER;
