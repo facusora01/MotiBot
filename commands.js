@@ -211,6 +211,37 @@ async function resolverMenciones(client, msg, texto) {
   return out;
 }
 
+// getQuotedMessage() evalúa en la página y explota (error minificado tipo "r: r")
+// cuando el mensaje citado ya no está en el Store: mensajes viejos, borrados, o
+// de una sesión anterior a este arranque. Ese raw sí viaja dentro del mensaje que
+// cita, así que armamos un mensaje "de mentira" con lo que necesitamos (body,
+// menciones, autor) para no perder el /add.
+async function obtenerCitado(client, message) {
+  try {
+    const quoted = await message.getQuotedMessage();
+    if (quoted) return quoted;
+  } catch (e) {
+    console.warn("⚠️ getQuotedMessage falló, uso el raw del mensaje:", e.message);
+  }
+
+  const raw = message?._data?.quotedMsg;
+  if (!raw) return null;
+
+  const part = message._data.quotedParticipant;
+  const autorId = typeof part === "string" ? part : part?._serialized;
+
+  return {
+    body: raw.body || raw.caption || "",
+    author: autorId,
+    from: autorId,
+    mentionedIds: raw.mentionedJidList || [],
+    _data: {
+      notifyName: raw.notifyName,
+      mentionedJidList: raw.mentionedJidList || [],
+    },
+  };
+}
+
 // ─── HANDLER PRINCIPAL ────────────────────────────────────────────────────────
 async function handleCommand(message, client) {
   try {
@@ -318,7 +349,11 @@ async function handleCommand(message, client) {
         return message.reply('💡 Para usar `/add`, respondé (reply) al mensaje que querés guardar como frase.');
       }
 
-      const quoted = await message.getQuotedMessage();
+      const quoted = await obtenerCitado(client, message);
+
+      if (!quoted) {
+        return message.reply("❌ No pude leer ese mensaje citado (puede ser muy viejo o estar borrado). Probá con `/new <frase> — <autor>`.");
+      }
 
       // 🛡️ Solo guardamos TEXTO. Aceptamos mensajes escritos y captions de
       // imagen/video (vienen en body). Si no hay texto (sticker, audio/voz,
