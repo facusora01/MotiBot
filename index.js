@@ -143,14 +143,21 @@ async function enviarCumpleanios(client, group) {
       const edad = cumple.year ? hoy.year - cumple.year : null;
       const marca = frase.source === "add" ? "🗣️ " : "";
 
+      // Para que WhatsApp muestre la mención (y le llegue la notificación) el
+      // texto tiene que traer el "@<número>"; la lista de mentions sola no
+      // alcanza. Va fuera de los asteriscos para que no se coma el formato.
+      const arroba = cumple.user_id ? `@${String(cumple.user_id).split("@")[0]}` : nombre;
+
       const mensaje =
-        `🎉🎂 *¡FELIZ CUMPLEAÑOS, ${nombre}!* 🎂🎉\n\n` +
-        (edad !== null ? `Hoy soplás *${edad}* velitas. ¡Que sea un año enorme! 🥳\n\n` : `¡Que sea un año enorme! 🥳\n\n`) +
+        `🎉🎂 *¡FELIZ CUMPLEAÑOS!* 🎂🎉\n\n` +
+        (edad !== null
+          ? `${arroba}, hoy soplás *${edad}* velitas. ¡Que sea un año enorme! 🥳\n\n`
+          : `${arroba}, ¡que sea un año enorme! 🥳\n\n`) +
         `🎁 Y de regalo, una frase para vos:\n\n` +
         `_"${frase.texto}"_\n\n— ${marca}*${frase.autor}*`;
 
       await conTimeout(
-        client.sendMessage(group.group_id, mensaje, { mentions: [cumple.user_id] }),
+        client.sendMessage(group.group_id, mensaje, { mentions: cumple.user_id ? [cumple.user_id] : [] }),
         REPLY_TIMEOUT,
         `cumple de ${nombre}`
       );

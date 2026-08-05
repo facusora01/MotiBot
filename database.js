@@ -64,11 +64,17 @@ db.exec(`
     FOREIGN KEY (group_id) REFERENCES groups(group_id)
   );
 
+  -- Un voto por persona y por GRUPO, no por listado: así los votos se acumulan
+  -- entre listados en vez de reiniciarse. poll_msg_id recuerda en qué listado se
+  -- emitió, que es lo que permite distinguir "retiró su reacción de ESE listado"
+  -- de "votó en otro".
   CREATE TABLE IF NOT EXISTS idea_votes (
-    idea_id    INTEGER NOT NULL,
-    voter_id   TEXT NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (idea_id, voter_id),
+    group_id    TEXT NOT NULL,
+    voter_id    TEXT NOT NULL,
+    idea_id     INTEGER NOT NULL,
+    poll_msg_id TEXT,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (group_id, voter_id),
     FOREIGN KEY (idea_id) REFERENCES ideas(id)
   );
 
@@ -98,6 +104,40 @@ try {
   db.exec(`ALTER TABLE custom_phrases ADD COLUMN source TEXT DEFAULT 'new'`);
   console.log("🔧 Migración: Columna 'source' lista.");
 } catch (e) {}
+
+// idea_votes nació con PK (idea_id, voter_id), que reiniciaba la votación en
+// cada listado nuevo. La PK no se puede cambiar con ALTER: rehacemos la tabla
+// conservando los votos, deduciendo el grupo desde ideas y asignándoles el
+// listado vigente de ese grupo.
+try {
+  const columnas = db.prepare(`PRAGMA table_info(idea_votes)`).all().map((c) => c.name);
+  if (columnas.length && !columnas.includes("poll_msg_id")) {
+    db.exec(`
+      CREATE TABLE idea_votes_nueva (
+        group_id    TEXT NOT NULL,
+        voter_id    TEXT NOT NULL,
+        idea_id     INTEGER NOT NULL,
+        poll_msg_id TEXT,
+        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (group_id, voter_id),
+        FOREIGN KEY (idea_id) REFERENCES ideas(id)
+      );
+
+      INSERT OR IGNORE INTO idea_votes_nueva (group_id, voter_id, idea_id, poll_msg_id, created_at)
+      SELECT i.group_id, v.voter_id, v.idea_id,
+             (SELECT p.msg_id FROM idea_polls p WHERE p.group_id = i.group_id ORDER BY p.created_at DESC LIMIT 1),
+             v.created_at
+      FROM idea_votes v
+      JOIN ideas i ON i.id = v.idea_id;
+
+      DROP TABLE idea_votes;
+      ALTER TABLE idea_votes_nueva RENAME TO idea_votes;
+    `);
+    console.log("🔧 Migración: votos de ideas ahora son uno por persona y grupo.");
+  }
+} catch (e) {
+  console.error("❌ Error migrando idea_votes:", e.message);
+}
 
 // ─── GRUPOS ───────────────────────────────────────────────────────────────────
 
@@ -402,31 +442,29 @@ function getPollsRecientes(dias = 7) {
   }).filter(Boolean);
 }
 
-// Reescribe los votos desde las reacciones reales. Idempotente: corrige
-// cualquier desincronización (evento perdido, reinicio) en la próxima pasada.
-function reemplazarVotosPoll(ideaIds, votos) {
+// Aplica las reacciones de UN listado sin pisar los votos de los demás: quien
+// reaccionó acá pasa a votar esta idea (su voto anterior en el grupo se muda) y
+// solo se borra a quien había votado en ESTE listado y ya no figura, es decir
+// quien retiró su reacción. El que votó en otro listado queda intacto.
+function aplicarVotosDePoll(groupId, pollMsgId, votos) {
   const aplicar = db.transaction(() => {
-    const del = db.prepare(`DELETE FROM idea_votes WHERE idea_id = ?`);
-    for (const id of ideaIds) del.run(id);
+    const upsert = db.prepare(`
+      INSERT INTO idea_votes (group_id, voter_id, idea_id, poll_msg_id)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(group_id, voter_id) DO UPDATE SET
+        idea_id = excluded.idea_id,
+        poll_msg_id = excluded.poll_msg_id,
+        created_at = CURRENT_TIMESTAMP
+    `);
+    for (const v of votos) upsert.run(groupId, v.voterId, v.ideaId, pollMsgId);
 
-    const ins = db.prepare(`INSERT OR IGNORE INTO idea_votes (idea_id, voter_id) VALUES (?, ?)`);
-    for (const v of votos) ins.run(v.ideaId, v.voterId);
+    const votantes = votos.map((v) => v.voterId);
+    const huecos = votantes.length ? `AND voter_id NOT IN (${votantes.map(() => "?").join(",")})` : "";
+    db.prepare(`
+      DELETE FROM idea_votes WHERE group_id = ? AND poll_msg_id = ? ${huecos}
+    `).run(groupId, pollMsgId, ...votantes);
   });
   return aplicar();
-}
-
-// Un voto por persona y por listado: el nuevo reemplaza al anterior.
-function setVoto(ideaIds, voterId, ideaElegida) {
-  const votar = db.transaction(() => {
-    const del = db.prepare(`DELETE FROM idea_votes WHERE idea_id = ? AND voter_id = ?`);
-    for (const id of ideaIds) del.run(id, voterId);
-    if (ideaElegida) {
-      db.prepare(`
-        INSERT OR IGNORE INTO idea_votes (idea_id, voter_id) VALUES (?, ?)
-      `).run(ideaElegida, voterId);
-    }
-  });
-  return votar();
 }
 
 module.exports = {
@@ -467,6 +505,5 @@ module.exports = {
   getIdeaPoll,
   getPollsRecientes,
   getPollsDeGrupo,
-  reemplazarVotosPoll,
-  setVoto,
+  aplicarVotosDePoll,
 };

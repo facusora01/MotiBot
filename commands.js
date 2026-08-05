@@ -1231,8 +1231,6 @@ async function leerReacciones(client, msgId) {
 }
 
 async function sincronizarVotos(client, poll) {
-  const ideaIds = Object.values(poll.mapping);
-
   const lectura = await leerReacciones(client, poll.msg_id);
   // Si la lectura falló no tocamos nada: cero reacciones leídas por error
   // borraría los votos que ya estaban.
@@ -1257,10 +1255,10 @@ async function sincronizarVotos(client, poll) {
     }
   }
 
-  db.reemplazarVotosPoll(ideaIds, votos);
+  db.aplicarVotosDePoll(poll.group_id, poll.msg_id, votos);
 
   console.log(
-    `🗳️  Votos sincronizados (${poll.msg_id}): ${votos.length} voto(s)` +
+    `🗳️  Votos sincronizados (${poll.msg_id}): ${votos.length} en este listado` +
     (sinMapear.length ? ` · emojis ignorados: ${sinMapear.join(" ")}` : "")
   );
   return { ok: true, votos: votos.length };
