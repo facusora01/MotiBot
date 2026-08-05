@@ -35,6 +35,52 @@ db.exec(`
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (group_id) REFERENCES groups(group_id)
   );
+
+  -- Un cumpleaños por persona y por grupo (la misma persona puede estar en
+  -- varios grupos). last_greeted guarda el YYYY-MM-DD del último saludo: es lo
+  -- que evita saludar dos veces si el proceso reinicia dentro del mismo minuto.
+  CREATE TABLE IF NOT EXISTS birthdays (
+    group_id     TEXT NOT NULL,
+    user_id      TEXT NOT NULL,
+    name         TEXT,
+    month        INTEGER NOT NULL,
+    day          INTEGER NOT NULL,
+    year         INTEGER,
+    added_by     TEXT,
+    last_greeted TEXT,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (group_id, user_id),
+    FOREIGN KEY (group_id) REFERENCES groups(group_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS ideas (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id    TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    author      TEXT DEFAULT 'Anónimo',
+    author_id   TEXT,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (group_id) REFERENCES groups(group_id)
+  );
+
+  -- WhatsApp permite UNA reacción por persona y por mensaje, así que la PK
+  -- (idea_id, voter_id) alcanza: votar otra idea reemplaza el voto anterior.
+  CREATE TABLE IF NOT EXISTS idea_votes (
+    idea_id    INTEGER NOT NULL,
+    voter_id   TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (idea_id, voter_id),
+    FOREIGN KEY (idea_id) REFERENCES ideas(id)
+  );
+
+  -- Mapa emoji → idea del último listado enviado a cada grupo. Cuando llega una
+  -- reacción solo tenemos el id del mensaje: acá resolvemos a qué idea votó.
+  CREATE TABLE IF NOT EXISTS idea_polls (
+    msg_id     TEXT PRIMARY KEY,
+    group_id   TEXT NOT NULL,
+    mapping    TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // ─── MIGRACIONES AUTOMÁTICAS ──────────────────────────────────────────────────
@@ -193,6 +239,187 @@ function activateCustomNow(groupId) {
   }
 }
 
+// ─── CUMPLEAÑOS ───────────────────────────────────────────────────────────────
+// Volver a cargar a la misma persona pisa la fecha anterior (así se corrige un
+// error sin comando extra) y limpia last_greeted: si la fecha nueva es hoy, el
+// saludo sale igual.
+function setBirthday(groupId, userId, name, month, day, year, addedBy) {
+  db.prepare(`
+    INSERT INTO birthdays (group_id, user_id, name, month, day, year, added_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(group_id, user_id) DO UPDATE SET
+      name = excluded.name,
+      month = excluded.month,
+      day = excluded.day,
+      year = excluded.year,
+      added_by = excluded.added_by,
+      last_greeted = NULL
+  `).run(groupId, userId, name || null, month, day, year || null, addedBy);
+}
+
+function getBirthdaysList(groupId) {
+  return db.prepare(`
+    SELECT * FROM birthdays WHERE group_id = ? ORDER BY month, day
+  `).all(groupId);
+}
+
+function countBirthdays(groupId) {
+  return db.prepare(`SELECT COUNT(*) as count FROM birthdays WHERE group_id = ?`).get(groupId).count;
+}
+
+// fechas: [{ month, day }] — normalmente una sola, pero el 1/3 de un año no
+// bisiesto también arrastra a los nacidos el 29/2. hoyISO (YYYY-MM-DD) filtra a
+// los ya saludados hoy.
+function getBirthdaysDelDia(groupId, fechas, hoyISO) {
+  if (!fechas.length) return [];
+  const where = fechas.map(() => "(month = ? AND day = ?)").join(" OR ");
+  const params = fechas.flatMap((f) => [f.month, f.day]);
+  return db.prepare(`
+    SELECT * FROM birthdays
+    WHERE group_id = ? AND (${where})
+      AND (last_greeted IS NULL OR last_greeted != ?)
+  `).all(groupId, ...params, hoyISO);
+}
+
+function markBirthdayGreeted(groupId, userId, hoyISO) {
+  db.prepare(`
+    UPDATE birthdays SET last_greeted = ? WHERE group_id = ? AND user_id = ?
+  `).run(hoyISO, groupId, userId);
+}
+
+function deleteBirthday(groupId, userId) {
+  const info = db.prepare(`DELETE FROM birthdays WHERE group_id = ? AND user_id = ?`).run(groupId, userId);
+  return info.changes > 0;
+}
+
+// ─── IDEAS ────────────────────────────────────────────────────────────────────
+function addIdea(groupId, text, author, authorId) {
+  const info = db.prepare(`
+    INSERT INTO ideas (group_id, text, author, author_id) VALUES (?, ?, ?, ?)
+  `).run(groupId, text, author || "Anónimo", authorId);
+  return info.lastInsertRowid;
+}
+
+// Ordenadas por votos y, a igualdad, por antigüedad: la que se propuso primero
+// queda arriba en vez de bailar según el orden que devuelva SQLite.
+function getIdeasList(groupId) {
+  return db.prepare(`
+    SELECT i.*, (SELECT COUNT(*) FROM idea_votes v WHERE v.idea_id = i.id) AS votes
+    FROM ideas i
+    WHERE i.group_id = ?
+    ORDER BY votes DESC, i.id ASC
+  `).all(groupId);
+}
+
+function countIdeas(groupId) {
+  return db.prepare(`SELECT COUNT(*) as count FROM ideas WHERE group_id = ?`).get(groupId).count;
+}
+
+// Tope diario por persona: evita que una sola llene el listado.
+function countIdeasHoyDeAutor(groupId, authorId) {
+  return db.prepare(`
+    SELECT COUNT(*) as count FROM ideas
+    WHERE group_id = ? AND author_id = ?
+      AND date(created_at, 'localtime') = date('now', 'localtime')
+  `).get(groupId, authorId).count;
+}
+
+function deleteIdeas(groupId, ideaIds) {
+  const borrar = db.transaction((ids) => {
+    const delVotes = db.prepare(`DELETE FROM idea_votes WHERE idea_id = ?`);
+    const delIdea = db.prepare(`DELETE FROM ideas WHERE group_id = ? AND id = ?`);
+    for (const raw of ids) {
+      const id = parseInt(raw, 10);
+      if (!Number.isInteger(id)) continue;
+      delVotes.run(id);
+      delIdea.run(groupId, id);
+    }
+  });
+  return borrar(ideaIds);
+}
+
+// ─── VOTACIÓN DE IDEAS ────────────────────────────────────────────────────────
+function saveIdeaPoll(msgId, groupId, mapping) {
+  db.prepare(`
+    INSERT INTO idea_polls (msg_id, group_id, mapping) VALUES (?, ?, ?)
+    ON CONFLICT(msg_id) DO UPDATE SET mapping = excluded.mapping
+  `).run(msgId, groupId, JSON.stringify(mapping));
+}
+
+function getIdeaPoll(msgId) {
+  const row = db.prepare(`SELECT * FROM idea_polls WHERE msg_id = ?`).get(msgId);
+  if (!row) return null;
+  try {
+    return { ...row, mapping: JSON.parse(row.mapping) };
+  } catch (e) {
+    return null;
+  }
+}
+
+// Listados vivos de UN chat. Es el filtro barato que decide, sin tocar la
+// página, si una reacción nos interesa: si el chat no tiene listado, se ignora.
+function getPollsDeGrupo(groupId, dias = 7) {
+  const rows = db.prepare(`
+    SELECT * FROM idea_polls
+    WHERE group_id = ? AND created_at > datetime('now', ?)
+    ORDER BY created_at DESC
+  `).all(groupId, `-${dias} days`);
+
+  return rows.map((row) => {
+    try {
+      return { ...row, mapping: JSON.parse(row.mapping) };
+    } catch (e) {
+      return null;
+    }
+  }).filter(Boolean);
+}
+
+function getPollsRecientes(dias = 7) {
+  const rows = db.prepare(`
+    SELECT * FROM idea_polls
+    WHERE created_at > datetime('now', ?)
+    ORDER BY created_at DESC
+  `).all(`-${dias} days`);
+
+  return rows.map((row) => {
+    try {
+      return { ...row, mapping: JSON.parse(row.mapping) };
+    } catch (e) {
+      return null;
+    }
+  }).filter(Boolean);
+}
+
+// Reescribe de cero los votos de las ideas de un listado a partir de lo que
+// WhatsApp reporta como reacciones reales. Es idempotente: si algo se
+// desincronizó (un evento perdido, un reinicio), la próxima pasada lo corrige.
+function reemplazarVotosPoll(ideaIds, votos) {
+  const aplicar = db.transaction(() => {
+    const del = db.prepare(`DELETE FROM idea_votes WHERE idea_id = ?`);
+    for (const id of ideaIds) del.run(id);
+
+    const ins = db.prepare(`INSERT OR IGNORE INTO idea_votes (idea_id, voter_id) VALUES (?, ?)`);
+    for (const v of votos) ins.run(v.ideaId, v.voterId);
+  });
+  return aplicar();
+}
+
+// Un voto por persona y por listado: antes de sumar el nuevo, borramos el que
+// esa persona tuviera en cualquier idea de ESE listado (WhatsApp reemplaza la
+// reacción anterior, así que el voto viejo quedaría colgado).
+function setVoto(ideaIds, voterId, ideaElegida) {
+  const votar = db.transaction(() => {
+    const del = db.prepare(`DELETE FROM idea_votes WHERE idea_id = ? AND voter_id = ?`);
+    for (const id of ideaIds) del.run(id, voterId);
+    if (ideaElegida) {
+      db.prepare(`
+        INSERT OR IGNORE INTO idea_votes (idea_id, voter_id) VALUES (?, ?)
+      `).run(ideaElegida, voterId);
+    }
+  });
+  return votar();
+}
+
 module.exports = {
   addGroup,
   removeGroup,
@@ -215,4 +442,21 @@ module.exports = {
   deleteMultiplePhrases,
   getGroupToken,
   activateCustomNow,
+  setBirthday,
+  getBirthdaysList,
+  countBirthdays,
+  getBirthdaysDelDia,
+  markBirthdayGreeted,
+  deleteBirthday,
+  addIdea,
+  getIdeasList,
+  countIdeas,
+  countIdeasHoyDeAutor,
+  deleteIdeas,
+  saveIdeaPoll,
+  getIdeaPoll,
+  getPollsRecientes,
+  getPollsDeGrupo,
+  reemplazarVotosPoll,
+  setVoto,
 };

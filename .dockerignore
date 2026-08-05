@@ -2,8 +2,16 @@
 # en Linux. Se reinstala dentro de la imagen.
 node_modules
 
-# La sesión se monta como volumen (docker-compose), no se hornea en la imagen.
+# Las sesiones se montan como volumen (docker-compose), no se hornean en la
+# imagen. Además el perfil de Chromium tiene sockets/symlinks (SingletonCookie)
+# que el build no puede leer: si entran al contexto, el build falla.
 bot_session
+bot_session_test
+
+# Perfil/caché que deja whatsapp-web.js al correr fuera de Docker: 160MB+ que no
+# sirven en la imagen y que se copiaban al contexto en cada build.
+.wwebjs_auth
+.wwebjs_cache
 
 # DB local: el contenedor de pruebas arranca con su propia base limpia.
 *.db

@@ -6,7 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const db = require("./database");
 const { getPhraseInstant, iniciarPool } = require("./phrases");
-const { handleCommand } = require("./commands");
+const { handleCommand, handleReaction } = require("./commands");
 const { alertarRevinculacion } = require("./notify");
 const { respaldarSesion, restaurarSesionSiHaceFalta, borrarSesionYBackup } = require("./session-backup");
 const { getTunnelUrl } = require("./tunnel-url");
@@ -94,6 +94,72 @@ async function sendDailyPhrases(client, specificGroupId = null) {
       console.log(`✉️  [${ahora}] → ${group.group_name}: "${frase.texto.slice(0, 50)}..."`);
     } catch (error) {
       console.error(`❌ Error enviando a ${group.group_name}:`, error.message);
+    }
+  }
+}
+
+// El server puede correr en UTC: la fecha "de hoy" tiene que ser la argentina,
+// si no un cumple del día 5 se saluda el 4 a las 21hs.
+function fechaArgentina() {
+  const partes = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Argentina/Buenos_Aires",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+  const [year, month, day] = partes.split("-").map(Number);
+  return { year, month, day, iso: partes };
+}
+
+function esBisiesto(y) {
+  return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+}
+
+// Saluda a los cumpleañeros del grupo. El regalo es una frase: del equipo si el
+// modo custom está activo, del libro clásico si no.
+async function enviarCumpleanios(client, group) {
+  const hoy = fechaArgentina();
+
+  const fechas = [{ month: hoy.month, day: hoy.day }];
+  // Los nacidos un 29/2 se quedarían sin saludo 3 de cada 4 años: los sumamos al 1/3.
+  if (hoy.month === 3 && hoy.day === 1 && !esBisiesto(hoy.year)) {
+    fechas.push({ month: 2, day: 29 });
+  }
+
+  const cumples = db.getBirthdaysDelDia(group.group_id, fechas, hoy.iso);
+  if (!cumples.length) return;
+
+  db.checkAndActivateCustom(group.group_id);
+  const settings = db.getGroupSettings(group.group_id);
+
+  for (const cumple of cumples) {
+    try {
+      let frase = null;
+      if (settings?.use_custom === "active") {
+        const custom = db.getRandomCustomPhrase(group.group_id);
+        if (custom) frase = { texto: custom.phrase, autor: custom.author, source: custom.source };
+      }
+      if (!frase) frase = getPhraseInstant(settings?.language || "es");
+
+      const nombre = cumple.name || "crack";
+      const edad = cumple.year ? hoy.year - cumple.year : null;
+      const marca = frase.source === "add" ? "🗣️ " : "";
+
+      const mensaje =
+        `🎉🎂 *¡FELIZ CUMPLEAÑOS, ${nombre}!* 🎂🎉\n\n` +
+        (edad !== null ? `Hoy soplás *${edad}* velitas. ¡Que sea un año enorme! 🥳\n\n` : `¡Que sea un año enorme! 🥳\n\n`) +
+        `🎁 Y de regalo, una frase para vos:\n\n` +
+        `_"${frase.texto}"_\n\n— ${marca}*${frase.autor}*`;
+
+      await conTimeout(
+        client.sendMessage(group.group_id, mensaje, { mentions: [cumple.user_id] }),
+        REPLY_TIMEOUT,
+        `cumple de ${nombre}`
+      );
+
+      // Recién acá: si el envío falló, mañana no lo damos por saludado.
+      db.markBirthdayGreeted(group.group_id, cumple.user_id, hoy.iso);
+      console.log(`🎂 [${hoy.iso}] Saludo enviado a ${nombre} en ${group.group_name}`);
+    } catch (error) {
+      console.error(`❌ Error saludando a ${cumple.name} en ${group.group_name}:`, error.message);
     }
   }
 }
@@ -309,6 +375,13 @@ client.on("ready", async () => {
       const [nowH, nowM] = now.split(':').map(Number);
       const nowTotal = nowH * 60 + nowM;
 
+      // Los cumpleaños salen una sola vez por día, en el horario base del grupo
+      // (no en cada pasada de la frecuencia). Va antes de la frase del día para
+      // que el saludo encabece.
+      if (nowTotal === baseTotal) {
+        await enviarCumpleanios(client, group);
+      }
+
       for (let i = 0; i < freq; i++) {
         const slot = (baseTotal + (i * interval)) % 1440;
         if (nowTotal === slot) {
@@ -362,8 +435,15 @@ async function processMessage(message) {
     if (!from.endsWith("@g.us") && !from.endsWith("@lid")) return;
 
     const lowerBody = body.toLowerCase();
-    const esAdd = lowerBody === "/add" || lowerBody.startsWith("/add ");
-    if (!lowerBody.startsWith("/mbot") && !lowerBody.startsWith("/new ") && !esAdd) return;
+    const empiezaCon = (cmd) => lowerBody === cmd || lowerBody.startsWith(cmd + " ");
+    const esComando =
+      lowerBody.startsWith("/mbot") ||
+      lowerBody.startsWith("/new ") ||
+      empiezaCon("/add") ||
+      empiezaCon("/birthday") ||
+      empiezaCon("/idea") ||
+      empiezaCon("/ideas");
+    if (!esComando) return;
 
     const msgId = message.id?._serialized || message.id?.id;
     if (yaProcesado(msgId)) return;
@@ -390,6 +470,18 @@ async function processMessage(message) {
 }
 
 client.on("message_create", processMessage);
+
+// Votación de ideas: solo nos interesan las reacciones sobre un listado de
+// /ideas; el resto ni toca la base (handleReaction corta si no hay poll).
+// Llega una por CADA reacción de la cuenta, en cualquier chat. handleReaction
+// descarta las ajenas con una consulta a SQLite, sin tocar la página.
+client.on("message_reaction", async (reaction) => {
+  try {
+    await handleReaction(reaction, client);
+  } catch (error) {
+    console.error("❌ Error en message_reaction:", error.message);
+  }
+});
 
 // Destruimos el cliente (cierra Chromium, libera el lock) ANTES de salir — si
 // no, queda huérfano con SingletonLock y el próximo arranque falla.
@@ -531,16 +623,9 @@ function safeHTML(str) {
   return str.replace(/[&<>"']/g, m => map[m]);
 }
 
-app.get("/frases/:groupId", (req, res) => {
-  const { groupId } = req.params;
-  const { key } = req.query;
-  const group = db.getGroup(groupId);
-  const groupToken = db.getGroupToken(groupId);
-
-  if (!group) return res.status(404).send("<h1 style='text-align:center;'>Grupo no encontrado</h1>");
-
-  if (!key || key !== groupToken) {
-    return res.send(`
+// Misma pantalla de llave para el panel de frases y el de ideas.
+function paginaLogin(group, groupId, key) {
+  return `
       <!DOCTYPE html>
       <html lang="es">
       <head>
@@ -574,7 +659,19 @@ app.get("/frases/:groupId", (req, res) => {
         </script>
       </body>
       </html>
-    `);
+    `;
+}
+
+app.get("/frases/:groupId", (req, res) => {
+  const { groupId } = req.params;
+  const { key } = req.query;
+  const group = db.getGroup(groupId);
+  const groupToken = db.getGroupToken(groupId);
+
+  if (!group) return res.status(404).send("<h1 style='text-align:center;'>Grupo no encontrado</h1>");
+
+  if (!key || key !== groupToken) {
+    return res.send(paginaLogin(group, groupId, key));
   }
 
   const frases = db.getCustomPhrasesList(groupId);
@@ -600,13 +697,17 @@ app.get("/frases/:groupId", (req, res) => {
         .btn { padding: 6px 12px; border-radius: 4px; border: none; cursor: pointer; font-weight: bold; }
         .btn-del { background: var(--danger); color: white; }
         .btn-out { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
+        .btn-idea { background: #ffc107; color: #212529; text-decoration: none; display: inline-block; }
       </style>
     </head>
     <body>
       <div class="container">
         <div class="header">
           <h3 style="margin:0">📚 ${safeHTML(group.group_name)} (${frases.length})</h3>
-          <button class="btn btn-out" onclick="logout()">Cerrar Sesión 🔒</button>
+          <div style="display:flex; gap:8px;">
+            <a class="btn btn-idea" href="/ideas/${encodeURIComponent(groupId)}?key=${encodeURIComponent(key)}">💡 Ideas (${db.countIdeas(groupId)})</a>
+            <button class="btn btn-out" onclick="logout()">Cerrar Sesión 🔒</button>
+          </div>
           <input type="text" id="sIn" class="search-bar" placeholder="🔍 Buscar frase o autor..." onkeyup="filter()">
         </div>
         <div id="pList">
@@ -679,6 +780,118 @@ app.delete("/frases/:groupId", (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error("❌ Error en base de datos:", error);
+    res.status(500).json({ error: "Error interno del servidor al borrar." });
+  }
+});
+
+// Panel de ideas: mismo grupo, misma llave que /frases. Se entra por el botón
+// del panel de frases.
+app.get("/ideas/:groupId", (req, res) => {
+  const { groupId } = req.params;
+  const { key } = req.query;
+  const group = db.getGroup(groupId);
+  const groupToken = db.getGroupToken(groupId);
+
+  if (!group) return res.status(404).send("<h1 style='text-align:center;'>Grupo no encontrado</h1>");
+  if (!key || key !== groupToken) return res.send(paginaLogin(group, groupId, key));
+
+  const ideas = db.getIdeasList(groupId);
+  const maxVotos = ideas.reduce((max, i) => Math.max(max, i.votes), 0);
+
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+      <meta charset="UTF-8"><title>Ideas - ${group.group_name}</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+        :root { --bg: #f8f9fa; --border: #dee2e6; --danger: #dc3545; --gold: #ffc107; }
+        body { font-family: sans-serif; background: var(--bg); margin: 0; padding: 20px; color: #212529; }
+        .container { max-width: 900px; margin: auto; background: white; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); overflow: hidden; }
+        .header { padding: 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+        .idea-row { display: flex; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--border); gap: 15px; }
+        .idea-row:hover { background: #f1f3f5; }
+        .content-col { flex-grow: 1; }
+        .idea-text { font-weight: 500; }
+        .votes { min-width: 90px; text-align: right; font-weight: bold; color: #856404; }
+        .bar { height: 6px; background: var(--gold); border-radius: 3px; margin-top: 6px; }
+        .btn { padding: 6px 12px; border-radius: 4px; border: none; cursor: pointer; font-weight: bold; }
+        .btn-del { background: var(--danger); color: white; }
+        .btn-back { background: #6c757d; color: white; text-decoration: none; display: inline-block; }
+        .actions-bar { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #343a40; color: white; padding: 12px 25px; border-radius: 50px; display: none; align-items: center; gap: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); }
+        .empty { padding: 40px; text-align: center; color: #6c757d; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h3 style="margin:0">💡 Ideas — ${safeHTML(group.group_name)} (${ideas.length})</h3>
+          <a class="btn btn-back" href="/frases/${encodeURIComponent(groupId)}?key=${encodeURIComponent(key)}">← Volver a frases</a>
+        </div>
+        ${ideas.length === 0
+          ? `<div class="empty">Todavía no hay ideas. Se cargan desde el grupo con <code>/idea &lt;recomendación&gt;</code>.</div>`
+          : ideas.map(i => `
+            <div class="idea-row">
+              <input type="checkbox" class="i-cb" value="${i.id}" onchange="updateBar()">
+              <div class="content-col">
+                <span class="idea-text">${safeHTML(i.text)}</span>
+                <div><small>— ${safeHTML(i.author)} · ID #${i.id}</small></div>
+                ${i.votes > 0 ? `<div class="bar" style="width:${maxVotos ? Math.round((i.votes / maxVotos) * 100) : 0}%"></div>` : ''}
+              </div>
+              <div class="votes">🗳️ ${i.votes}</div>
+            </div>
+          `).join('')}
+      </div>
+      <div id="aBar" class="actions-bar">
+        <span id="cText">0 seleccionadas</span>
+        <button class="btn btn-del" onclick="deleteSelected()">🗑️ Borrar Seleccionadas</button>
+      </div>
+      <script>
+        function updateBar() {
+          const n = document.querySelectorAll('.i-cb:checked').length;
+          document.getElementById('aBar').style.display = n > 0 ? 'flex' : 'none';
+          document.getElementById('cText').innerText = n + " seleccionadas";
+        }
+        async function deleteSelected() {
+          if(!confirm('¿Borrar ideas seleccionadas? También se borran sus votos.')) return;
+          const ids = Array.from(document.querySelectorAll('.i-cb:checked')).map(c => c.value);
+          const key = new URLSearchParams(window.location.search).get('key') || localStorage.getItem('mbot_key_${groupId}');
+
+          try {
+            const res = await fetch(window.location.pathname, {
+              method: 'DELETE',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ ideaIds: ids, key: key })
+            });
+            if(res.ok) window.location.reload();
+            else {
+              const err = await res.json();
+              alert('❌ Error: ' + (err.error || 'No se pudo borrar'));
+            }
+          } catch(e) { alert('❌ Error de conexión al servidor.'); }
+        }
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+app.delete("/ideas/:groupId", (req, res) => {
+  const { groupId } = req.params;
+  const { ideaIds, key } = req.body;
+
+  const groupToken = db.getGroupToken(groupId);
+  if (!key || key !== groupToken) {
+    console.warn("⚠️ Intento de borrado de ideas RECHAZADO: llave incorrecta.");
+    return res.status(401).json({ error: "Llave maestra incorrecta o caducada." });
+  }
+
+  try {
+    db.deleteIdeas(groupId, ideaIds || []);
+    console.log(`✅ Se borraron ${(ideaIds || []).length} ideas del grupo ${groupId}.`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error("❌ Error borrando ideas:", error);
     res.status(500).json({ error: "Error interno del servidor al borrar." });
   }
 });

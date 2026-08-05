@@ -11,8 +11,8 @@ frases (`/new`, `/add`) en vez de usar la librería por defecto.
 ```
 MotivationBot/
 ├── index.js            ← Bot principal: cliente WhatsApp, cron, servidor web, watchdog
-├── commands.js         ← Lógica de los comandos /mbot y /new
-├── database.js         ← SQLite (grupos, settings, frases custom)
+├── commands.js         ← Lógica de los comandos y de la votación de ideas
+├── database.js         ← SQLite (grupos, settings, frases custom, cumpleaños, ideas)
 ├── phrases.js          ← Frases locales + pool de frases remotas (APIs externas)
 ├── notify.js           ← Alerta por mail cuando el bot pierde la sesión
 ├── session-backup.js   ← Backup/restore de la sesión de WhatsApp
@@ -77,6 +77,26 @@ Una vez conectado, el bot queda escuchando comandos y el scheduler corre solo.
 - `/add` (en reply a un mensaje) — guardar ese mensaje como frase
 - `/mbot phrase` — pedir una frase ya mismo
 - `/mbot list` — link al panel web para gestionar la colección
+
+**Cumpleaños:**
+- `/birthday @persona mm/dd/yyyy` — carga el cumple de alguien (formato **mes/día/año**;
+  el bot repite la fecha en palabras para que se note si se cargó al revés).
+  Volver a cargar a la misma persona pisa la fecha anterior.
+- `/birthday list` — todos los cumples del grupo
+
+El saludo sale solo, en el horario base del grupo, con la edad cumplida y una
+frase de regalo (del equipo si el modo custom está activo).
+
+**Ideas:**
+- `/idea <recomendación>` — propuesta de mejora, máx. 200 caracteres, 3 por
+  persona por día
+- `/ideas` — listado votable: cada idea lleva un emoji numerado y se vota
+  reaccionando a ese mensaje (una reacción por persona; cambiarla cambia el voto)
+- `/ideas list` — igual que `/mbot list` pero para las ideas: link al panel web
+  y llave al privado del admin
+
+Al panel de ideas también se llega desde el botón *💡 Ideas* del listado de
+frases; la llave es la misma para los dos.
 
 **Info:**
 - `/mbot status`, `/mbot time`, `/mbot help`

@@ -7,7 +7,12 @@ services:
     ports:
       - "3001:3001"   # /health, /pair, /frases
     volumes:
-      # Persistimos la sesión en el host: sobrevive a reinicios del contenedor y
-      # permite probar el backup/restore de session-backup.js entre arranques.
-      - ./bot_session:/app/bot_session
+      # Sesión PROPIA del contenedor, separada de ./bot_session (la del desarrollo
+      # local / producción). Dos procesos no pueden compartir las credenciales de
+      # un mismo dispositivo vinculado: WhatsApp invalida una y la deja en LOGOUT.
+      # Además, tras reinicios inestables el bot borra esta carpeta para forzar
+      # re-vinculación — apuntando acá, ese borrado no se lleva puesta tu sesión.
+      # Sigue siendo un volumen: sobrevive a reinicios y permite probar el
+      # backup/restore de session-backup.js entre arranques.
+      - ./bot_session_test:/app/bot_session
     restart: unless-stopped
