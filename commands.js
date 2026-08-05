@@ -75,7 +75,7 @@ Acá tenés todo lo que puedo hacer por vos y tu equipo:
 ▸ \`/mbot list\` — 🌐 Panel Web para gestionar la colección
 
 *🎂 Cumpleaños:*
-▸ \`/birthday @persona mm/dd/yyyy\` — Cargar un cumple (¡primero el mes!)
+▸ \`/birthday @persona dd/mm/yyyy\` — Cargar un cumple (día/mes/año)
 ▸ \`/birthday list\` — Ver todos los cumples cargados
 
 *💡 Ideas para el bot:*
@@ -272,17 +272,22 @@ function fechaEnPalabras(month, day) {
   return `${day} de ${MESES[month - 1]}`;
 }
 
-// Formato mm/dd/yyyy (pedido explícito). Devolvemos el error ya redactado para
-// que el comando solo tenga que reenviarlo.
+// Formato dd/mm/yyyy, como se escribe acá. Acepta con o sin ceros a la
+// izquierda (4/7/2001 y 04/07/2001 son lo mismo). Devolvemos el error ya
+// redactado para que el comando solo tenga que reenviarlo.
 function parsearFechaCumple(texto) {
   const m = texto.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
   if (!m) return { error: "formato" };
 
-  const month = parseInt(m[1], 10);
-  const day = parseInt(m[2], 10);
+  const day = parseInt(m[1], 10);
+  const month = parseInt(m[2], 10);
   const year = parseInt(m[3], 10);
 
-  if (month < 1 || month > 12) return { error: `El mes ${month} no existe. El formato es *mm/dd/yyyy* (primero el mes).` };
+  if (month < 1 || month > 12) {
+    // Caso típico de quien viene del formato americano: 12/25 en vez de 25/12.
+    const pista = day <= 12 ? `\n\n_¿Escribiste el mes primero? Acá va el día: ${month}/${day}/${year}._` : "";
+    return { error: `El mes ${month} no existe. El formato es *dd/mm/yyyy* (primero el día).${pista}` };
+  }
 
   // Construimos la fecha y verificamos que no se haya "corrido": new Date(2000, 1, 30)
   // devuelve el 1 de marzo en silencio, y así el 30/2 pasaría como válido.
@@ -504,15 +509,15 @@ async function handleCommand(message, client) {
       );
     }
 
-    // ── /birthday @persona mm/dd/yyyy ─────────────────────────────────────────
+    // ── /birthday @persona dd/mm/yyyy ─────────────────────────────────────────
     if (lowerBody === "/birthday" || lowerBody.startsWith("/birthday ")) {
       const group = db.getGroup(groupId);
       if (!group || !group.active) return message.reply(NO_REGISTRADO);
 
       const resto = body.slice("/birthday".length).trim();
-      const USO = "🎂 *Cómo cargar un cumpleaños:*\n\n`/birthday @persona mm/dd/yyyy`\n\n" +
-                  "Ejemplo: `/birthday @juan 04/08/2000` = 8 de abril de 2000.\n" +
-                  "_Ojo: primero el MES, después el día._\n\n" +
+      const USO = "🎂 *Cómo cargar un cumpleaños:*\n\n`/birthday @persona dd/mm/yyyy`\n\n" +
+                  "Ejemplo: `/birthday @juan 8/4/2000` = 8 de abril de 2000.\n" +
+                  "_Los ceros son opcionales: `8/4/2000` y `08/04/2000` valen igual._\n\n" +
                   "Para ver los cargados: `/birthday list`";
 
       if (!resto) return message.reply(USO);
@@ -520,7 +525,7 @@ async function handleCommand(message, client) {
       if (resto.toLowerCase() === "list") {
         const lista = db.getBirthdaysList(groupId);
         if (!lista.length) {
-          return message.reply("🎂 Todavía no hay ningún cumpleaños cargado. Sumá uno con `/birthday @persona mm/dd/yyyy`.");
+          return message.reply("🎂 Todavía no hay ningún cumpleaños cargado. Sumá uno con `/birthday @persona dd/mm/yyyy`.");
         }
         const lineas = lista.map((b) => {
           const anio = b.year ? ` (${b.year})` : "";
@@ -562,7 +567,7 @@ async function handleCommand(message, client) {
       // primero (dd/mm), acá lo ve al instante y lo corrige repitiendo el comando.
       return message.reply(
         `🎂 ¡Anotado! Voy a saludar a *${nombre}* cada *${fechaEnPalabras(fecha.month, fecha.day)}*.\n\n` +
-        `📅 Fecha guardada: ${fecha.month}/${fecha.day}/${fecha.year} _(mes/día/año)_\n` +
+        `📅 Fecha guardada: ${fecha.day}/${fecha.month}/${fecha.year} _(día/mes/año)_\n` +
         `🎈 Hoy tiene ${edad} años.\n\n` +
         `_Si la fecha no es esa, repetí el comando con la correcta y la piso._`
       );
@@ -601,9 +606,11 @@ async function handleCommand(message, client) {
           const adminId = message.author || message.from;
           await client.sendMessage(adminId,
             `🔐 *Llave Maestra Privada*\n\n` +
-            `Para gestionar las ideas de *${group.group_name}*, usá este token de acceso:\n\n` +
-            `*${token}*\n\n` +
-            `⚠️ _No compartas esta llave con nadie del grupo._`
+            `Entrá directo al panel de ideas de *${group.group_name}*:\n` +
+            `👉 ${baseUrl}/ideas/${groupId}?key=${token}\n\n` +
+            `Tu dispositivo va a recordar el acceso, no hace falta volver a ingresarla.\n\n` +
+            `Si te la piden igual, el token es:\n*${token}*\n\n` +
+            `⚠️ _No compartas este mensaje con nadie del grupo._`
           );
         } catch (error) {
           console.error("❌ Error enviando la llave por privado:", error);
@@ -619,12 +626,8 @@ async function handleCommand(message, client) {
 
       const { texto, mapping } = construirListadoIdeas(ideas);
 
-      // Sin id no hay votación. Tres vías, de la más barata a la más terca:
-      //   1. lo que devuelve el envío  — falla si el Store guardó el mensaje
-      //      bajo una clave distinta a la que la librería reconstruye;
-      //   2. el evento message_create  — trae el id real que puso WhatsApp;
-      //   3. la colección del chat     — lee los mensajes tal cual están.
-      // El listener de la vía 2 se registra ANTES de enviar.
+      // Sin id no hay votación. Tres vías: el retorno del envío, el evento
+      // message_create y la colección del chat. El listener va antes de enviar.
       const espera = esperarIdDelEnviado(client, groupId, texto);
 
       let enviado;
@@ -1058,11 +1061,13 @@ async function handleCommand(message, client) {
 
       try {
         const adminId = message.author || message.from;
-        await client.sendMessage(adminId, 
+        await client.sendMessage(adminId,
           `🔐 *Llave Maestra Privada*\n\n` +
-          `Para gestionar las frases de *${group.group_name}*, usá este token de acceso:\n\n` +
-          `*${token}*\n\n` +
-          `⚠️ _No compartas esta llave con nadie del grupo._`
+          `Entrá directo al panel de *${group.group_name}*:\n` +
+          `👉 ${baseUrl}/frases/${groupId}?key=${token}\n\n` +
+          `Tu dispositivo va a recordar el acceso, no hace falta volver a ingresarla.\n\n` +
+          `Si te la piden igual, el token es:\n*${token}*\n\n` +
+          `⚠️ _No compartas este mensaje con nadie del grupo._`
         );
       } catch (error) {
         console.error("❌ Error enviando link privado:", error);
@@ -1103,11 +1108,9 @@ async function handleCommand(message, client) {
   }
 }
 
-// sendMessage lee el mensaje recién enviado del Store sin esperar a que esté
-// indexado, así que muchas veces devuelve undefined y nos quedamos sin id. El
-// evento message_create, en cambio, entrega el mensaje ya construido. Lo
-// escuchamos como plan B: el listener se registra ANTES de enviar para no
-// perder el evento si llega rápido.
+// sendMessage suele devolver undefined (busca el mensaje con una clave que
+// reconstruye y no coincide con la real). message_create sí trae el mensaje
+// construido; el listener se registra ANTES de enviar.
 function esperarIdDelEnviado(client, chatId, texto, ms = 6000) {
   const cabecera = texto.split("\n")[0];
   let terminar;
@@ -1136,11 +1139,8 @@ function esperarIdDelEnviado(client, chatId, texto, ms = 6000) {
   return { promesa, cancelar: () => terminar(null) };
 }
 
-// Último recurso para ubicar el listado: leerlo de la colección de mensajes del
-// chat. Es la misma consulta que hace Chat.fetchMessages, pero salteando el
-// modelo del chat (getChatModel), que es justo lo que falla en los grupos donde
-// no se pudo ni leer el nombre. No reconstruye ninguna clave: devuelve el id
-// real que WhatsApp le puso al mensaje.
+// Último recurso: buscarlo en la colección de mensajes del chat. Misma consulta
+// que Chat.fetchMessages pero sin getChatModel, que falla en algunos grupos.
 async function buscarIdDelListadoEnChat(client, chatId, texto) {
   const cabecera = texto.split("\n")[0];
   try {
@@ -1211,19 +1211,10 @@ async function buscarIdDelListadoEnChat(client, chatId, texto) {
   }
 }
 
-// El payload del evento de reacción no es confiable: el emoji sale de
-// data.reactionText, un nombre de campo que la tabla moderna de WhatsApp puede
-// no usar (llega undefined), y el id del mensaje padre a veces trae el sufijo
-// del participante. Por eso el evento se usa solo como aviso de "algo cambió" y
-// la verdad se lee del mensaje: getReactions() devuelve quién reaccionó y con
-// qué. Como recalcula todo el listado, además se autocorrige si se perdió algún
-// evento o el bot estuvo caído.
-// Message.getReactions() no sirve acá por dos motivos: corta si hasReaction es
-// false (y lo es cuando releemos justo después de reaccionar) y llama a
-// Store.Reactions.find(this.id._serialized), campo que esta versión de WhatsApp
-// no expone → "called find without an id". Como el id serializado ya lo tenemos
-// guardado, consultamos las reacciones directo, con la misma llamada que hace
-// la librería pero pasándole el id que sí funciona.
+// No usamos Message.getReactions(): corta si hasReaction es false (lo es al
+// releer recién reaccionado) y llama a Store.Reactions.find(id._serialized),
+// campo que esta versión no expone → "called find without an id". Consultamos
+// directo con el id que sí tenemos guardado.
 async function leerReacciones(client, msgId) {
   try {
     const datos = await client.pupPage.evaluate(async (id) => {
@@ -1277,11 +1268,9 @@ async function sincronizarVotos(client, poll) {
 
 const demorar = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// El hook de la librería nos avisa ANTES de guardar la reacción: primero llama
-// a onReaction y recién después ejecuta el bulkUpsert original. Si leemos en ese
-// instante, el mensaje todavía figura sin reacciones (hasReaction en false) y
-// getReactions() devuelve undefined → 0 votos. Por eso esperamos, y si sigue en
-// cero reintentamos una vez por si el guardado tardó más de lo previsto.
+// El hook de la librería avisa ANTES de persistir la reacción (llama a
+// onReaction y recién después al bulkUpsert original), así que leer en ese
+// instante da cero. Esperamos, y reintentamos una vez si sigue en cero.
 const RETRASO_LECTURA = 1500;
 const RETRASO_REINTENTO = 2500;
 

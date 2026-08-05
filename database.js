@@ -2,8 +2,7 @@ const Database = require("better-sqlite3");
 const path = require("path");
 const crypto = require("crypto");
 
-// Configurable para poder correr pruebas contra una base descartable (y, si
-// algún día hace falta, para montar la base fuera del contenedor).
+// Configurable para correr pruebas contra una base descartable.
 const DB_PATH = process.env.MOTIBOT_DB || path.join(__dirname, "motivacional.db");
 const db = new Database(DB_PATH);
 
@@ -39,9 +38,8 @@ db.exec(`
     FOREIGN KEY (group_id) REFERENCES groups(group_id)
   );
 
-  -- Un cumpleaños por persona y por grupo (la misma persona puede estar en
-  -- varios grupos). last_greeted guarda el YYYY-MM-DD del último saludo: es lo
-  -- que evita saludar dos veces si el proceso reinicia dentro del mismo minuto.
+  -- last_greeted (YYYY-MM-DD) evita saludar dos veces si el proceso reinicia
+  -- dentro del mismo minuto.
   CREATE TABLE IF NOT EXISTS birthdays (
     group_id     TEXT NOT NULL,
     user_id      TEXT NOT NULL,
@@ -66,8 +64,6 @@ db.exec(`
     FOREIGN KEY (group_id) REFERENCES groups(group_id)
   );
 
-  -- WhatsApp permite UNA reacción por persona y por mensaje, así que la PK
-  -- (idea_id, voter_id) alcanza: votar otra idea reemplaza el voto anterior.
   CREATE TABLE IF NOT EXISTS idea_votes (
     idea_id    INTEGER NOT NULL,
     voter_id   TEXT NOT NULL,
@@ -76,8 +72,8 @@ db.exec(`
     FOREIGN KEY (idea_id) REFERENCES ideas(id)
   );
 
-  -- Mapa emoji → idea del último listado enviado a cada grupo. Cuando llega una
-  -- reacción solo tenemos el id del mensaje: acá resolvemos a qué idea votó.
+  -- Mapa emoji → idea del último listado de cada grupo: resuelve a qué idea
+  -- corresponde una reacción.
   CREATE TABLE IF NOT EXISTS idea_polls (
     msg_id     TEXT PRIMARY KEY,
     group_id   TEXT NOT NULL,
@@ -243,8 +239,7 @@ function activateCustomNow(groupId) {
 }
 
 // ─── CUMPLEAÑOS ───────────────────────────────────────────────────────────────
-// Volver a cargar a la misma persona pisa la fecha anterior (así se corrige un
-// error sin comando extra) y limpia last_greeted: si la fecha nueva es hoy, el
+// Recargar pisa la fecha anterior y limpia last_greeted: si la nueva es hoy, el
 // saludo sale igual.
 function setBirthday(groupId, userId, name, month, day, year, addedBy) {
   db.prepare(`
@@ -270,9 +265,8 @@ function countBirthdays(groupId) {
   return db.prepare(`SELECT COUNT(*) as count FROM birthdays WHERE group_id = ?`).get(groupId).count;
 }
 
-// fechas: [{ month, day }] — normalmente una sola, pero el 1/3 de un año no
-// bisiesto también arrastra a los nacidos el 29/2. hoyISO (YYYY-MM-DD) filtra a
-// los ya saludados hoy.
+// fechas: [{month, day}] — más de una el 1/3 de año no bisiesto, que arrastra a
+// los nacidos el 29/2.
 function getBirthdaysDelDia(groupId, fechas, hoyISO) {
   if (!fechas.length) return [];
   const where = fechas.map(() => "(month = ? AND day = ?)").join(" OR ");
@@ -303,10 +297,8 @@ function addIdea(groupId, text, author, authorId) {
   return info.lastInsertRowid;
 }
 
-// Orden ESTABLE (por antigüedad). Es el que usa el listado del chat: si
-// ordenáramos por votos, cada idea cambiaría de número al recibir uno y el
-// 1️⃣ significaría algo distinto en cada listado — quien vota cree que su voto
-// se fue a otra idea.
+// Orden estable para el listado del chat: ordenado por votos, cada idea
+// cambiaría de número al recibir uno y el voto parecería mal asignado.
 function getIdeasList(groupId) {
   return db.prepare(`
     SELECT i.*, (SELECT COUNT(*) FROM idea_votes v WHERE v.idea_id = i.id) AS votes
@@ -316,8 +308,7 @@ function getIdeasList(groupId) {
   `).all(groupId);
 }
 
-// Para el panel web, donde sí interesa ver el ranking y no hay numeración que
-// respetar.
+// Para el panel web, donde no hay numeración que respetar.
 function getIdeasRanking(groupId) {
   return db.prepare(`
     SELECT i.*, (SELECT COUNT(*) FROM idea_votes v WHERE v.idea_id = i.id) AS votes
@@ -355,10 +346,8 @@ function deleteIdeas(groupId, ideaIds) {
 }
 
 // ─── VOTACIÓN DE IDEAS ────────────────────────────────────────────────────────
-// Un solo listado activo por grupo. Con dos, los votos de uno pisan los del
-// otro: cada sincronización recalcula desde las reacciones de SU mensaje, así
-// que el último en sincronizar borraría los votos del anterior. Además, cuando
-// la reacción llega sin el id del mensaje, hay que adivinar a cuál pertenece.
+// Un solo listado activo por grupo: cada sincronización recalcula los votos
+// desde las reacciones de SU mensaje, así que dos listados se pisan entre sí.
 function saveIdeaPoll(msgId, groupId, mapping) {
   const guardar = db.transaction(() => {
     db.prepare(`DELETE FROM idea_polls WHERE group_id = ? AND msg_id != ?`).run(groupId, msgId);
@@ -380,8 +369,7 @@ function getIdeaPoll(msgId) {
   }
 }
 
-// Listados vivos de UN chat. Es el filtro barato que decide, sin tocar la
-// página, si una reacción nos interesa: si el chat no tiene listado, se ignora.
+// Filtro barato para descartar reacciones ajenas sin tocar la página.
 function getPollsDeGrupo(groupId, dias = 7) {
   const rows = db.prepare(`
     SELECT * FROM idea_polls
@@ -414,9 +402,8 @@ function getPollsRecientes(dias = 7) {
   }).filter(Boolean);
 }
 
-// Reescribe de cero los votos de las ideas de un listado a partir de lo que
-// WhatsApp reporta como reacciones reales. Es idempotente: si algo se
-// desincronizó (un evento perdido, un reinicio), la próxima pasada lo corrige.
+// Reescribe los votos desde las reacciones reales. Idempotente: corrige
+// cualquier desincronización (evento perdido, reinicio) en la próxima pasada.
 function reemplazarVotosPoll(ideaIds, votos) {
   const aplicar = db.transaction(() => {
     const del = db.prepare(`DELETE FROM idea_votes WHERE idea_id = ?`);
@@ -428,9 +415,7 @@ function reemplazarVotosPoll(ideaIds, votos) {
   return aplicar();
 }
 
-// Un voto por persona y por listado: antes de sumar el nuevo, borramos el que
-// esa persona tuviera en cualquier idea de ESE listado (WhatsApp reemplaza la
-// reacción anterior, así que el voto viejo quedaría colgado).
+// Un voto por persona y por listado: el nuevo reemplaza al anterior.
 function setVoto(ideaIds, voterId, ideaElegida) {
   const votar = db.transaction(() => {
     const del = db.prepare(`DELETE FROM idea_votes WHERE idea_id = ? AND voter_id = ?`);

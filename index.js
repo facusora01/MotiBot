@@ -623,6 +623,15 @@ function safeHTML(str) {
   return str.replace(/[&<>"']/g, m => map[m]);
 }
 
+// Guarda la llave en el dispositivo apenas se entra a un panel válido. Antes
+// solo se guardaba al tipearla en el formulario, así que quien entraba por un
+// link con la llave tenía que ingresarla igual en la visita siguiente.
+function scriptRecordarLlave(groupId, key) {
+  return `<script>
+    try { localStorage.setItem('mbot_key_${groupId}', ${JSON.stringify(key)}); } catch (e) {}
+  </script>`;
+}
+
 // Misma pantalla de llave para el panel de frases y el de ideas.
 function paginaLogin(group, groupId, key) {
   return `
@@ -648,13 +657,18 @@ function paginaLogin(group, groupId, key) {
           ${key ? '<p class="error">❌ Llave inválida</p>' : ''}
         </div>
         <script>
+          const CLAVE = 'mbot_key_${groupId}';
+          // Si llegamos acá CON una llave, es porque no sirve: la borramos para
+          // no reintentar con la misma en cada visita.
+          if (window.location.search.includes('key')) localStorage.removeItem(CLAVE);
+
           window.onload = () => {
-            const saved = localStorage.getItem('mbot_key_${groupId}');
-            if (saved && !window.location.search.includes('key')) window.location.href = "?key=" + saved;
+            const saved = localStorage.getItem(CLAVE);
+            if (saved && !window.location.search.includes('key')) window.location.href = "?key=" + encodeURIComponent(saved);
           };
           function login() {
             const t = document.getElementById('tInput').value.trim();
-            if(t) { localStorage.setItem('mbot_key_${groupId}', t); window.location.href = "?key=" + t; }
+            if(t) { localStorage.setItem(CLAVE, t); window.location.href = "?key=" + encodeURIComponent(t); }
           }
         </script>
       </body>
@@ -727,6 +741,7 @@ app.get("/frases/:groupId", (req, res) => {
         <span id="cText">0 seleccionadas</span>
         <button class="btn btn-del" onclick="deleteSelected()">🗑️ Borrar Seleccionadas</button>
       </div>
+      ${scriptRecordarLlave(groupId, key)}
       <script>
         function filter() {
           const q = document.getElementById('sIn').value.toLowerCase();
@@ -846,6 +861,7 @@ app.get("/ideas/:groupId", (req, res) => {
         <span id="cText">0 seleccionadas</span>
         <button class="btn btn-del" onclick="deleteSelected()">🗑️ Borrar Seleccionadas</button>
       </div>
+      ${scriptRecordarLlave(groupId, key)}
       <script>
         function updateBar() {
           const n = document.querySelectorAll('.i-cb:checked').length;

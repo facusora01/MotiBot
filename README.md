@@ -79,9 +79,10 @@ Una vez conectado, el bot queda escuchando comandos y el scheduler corre solo.
 - `/mbot list` — link al panel web para gestionar la colección
 
 **Cumpleaños:**
-- `/birthday @persona mm/dd/yyyy` — carga el cumple de alguien (formato **mes/día/año**;
-  el bot repite la fecha en palabras para que se note si se cargó al revés).
-  Volver a cargar a la misma persona pisa la fecha anterior.
+- `/birthday @persona dd/mm/yyyy` — carga el cumple de alguien (formato **día/mes/año**,
+  con los ceros opcionales: `8/4/2000` y `08/04/2000` son lo mismo). El bot repite
+  la fecha en palabras para que se note si se cargó al revés, y volver a cargar a
+  la misma persona pisa la fecha anterior.
 - `/birthday list` — todos los cumples del grupo
 
 El saludo sale solo, en el horario base del grupo, con la edad cumplida y una
