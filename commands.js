@@ -619,9 +619,12 @@ async function handleCommand(message, client) {
 
       const { texto, mapping } = construirListadoIdeas(ideas);
 
-      // Sin id no hay votación posible, así que lo buscamos por dos vías: el
-      // retorno del envío (rápido, pero suele venir vacío) y el evento
-      // message_create (más lento, pero confiable). El listener va primero.
+      // Sin id no hay votación. Tres vías, de la más barata a la más terca:
+      //   1. lo que devuelve el envío  — falla si el Store guardó el mensaje
+      //      bajo una clave distinta a la que la librería reconstruye;
+      //   2. el evento message_create  — trae el id real que puso WhatsApp;
+      //   3. la colección del chat     — lee los mensajes tal cual están.
+      // El listener de la vía 2 se registra ANTES de enviar.
       const espera = esperarIdDelEnviado(client, groupId, texto);
 
       let enviado;
@@ -632,17 +635,28 @@ async function handleCommand(message, client) {
         throw e;
       }
 
-      let msgId = enviado?.id?._serialized || null;
+      let msgId = idSerializado(enviado?.id);
+      let via = "envío";
+      console.log(`🔎 [1/3] envío devolvió: ${msgId || "nada"}`);
+
       if (msgId) {
         espera.cancelar();
       } else {
         const porEvento = await espera.promesa;
-        msgId = porEvento?.id?._serialized || null;
-        if (msgId) console.log(`💡 Id del listado obtenido por message_create: ${msgId}`);
+        msgId = idSerializado(porEvento?.id);
+        via = "message_create";
+        console.log(`🔎 [2/3] message_create: ${msgId || "no llegó ningún mensaje propio con esa cabecera"}`);
+      }
+
+      if (!msgId) {
+        msgId = await buscarIdDelListadoEnChat(client, groupId, texto);
+        via = "colección del chat";
+        console.log(`🔎 [3/3] colección del chat: ${msgId || "no encontré el mensaje"}`);
       }
 
       if (msgId) {
         db.saveIdeaPoll(msgId, groupId, mapping);
+        console.log(`💡 Listado guardado (id vía ${via}): ${msgId}`);
       } else {
         console.warn("⚠️ No pude guardar el listado de ideas: el mensaje no devolvió id.");
         // Sin poll guardado los votos no se cuentan, y en silencio parecería que
@@ -1094,14 +1108,16 @@ async function handleCommand(message, client) {
 // evento message_create, en cambio, entrega el mensaje ya construido. Lo
 // escuchamos como plan B: el listener se registra ANTES de enviar para no
 // perder el evento si llega rápido.
-function esperarIdDelEnviado(client, chatId, texto, ms = 10000) {
+function esperarIdDelEnviado(client, chatId, texto, ms = 6000) {
   const cabecera = texto.split("\n")[0];
   let terminar;
 
   const promesa = new Promise((resolve) => {
+    // Matcheamos por cabecera y no por chat: el chat del mensaje propio puede
+    // venir con otro direccionamiento (@lid vs @g.us) y descartaría el match.
+    // La cabecera es única y la ventana dura segundos: no hay confusión posible.
     const handler = (m) => {
       if (!m?.fromMe) return;
-      if ((m.to || m.from) !== chatId) return;
       if (!(m.body || "").startsWith(cabecera)) return;
       terminar(m);
     };
@@ -1120,6 +1136,81 @@ function esperarIdDelEnviado(client, chatId, texto, ms = 10000) {
   return { promesa, cancelar: () => terminar(null) };
 }
 
+// Último recurso para ubicar el listado: leerlo de la colección de mensajes del
+// chat. Es la misma consulta que hace Chat.fetchMessages, pero salteando el
+// modelo del chat (getChatModel), que es justo lo que falla en los grupos donde
+// no se pudo ni leer el nombre. No reconstruye ninguna clave: devuelve el id
+// real que WhatsApp le puso al mensaje.
+async function buscarIdDelListadoEnChat(client, chatId, texto) {
+  const cabecera = texto.split("\n")[0];
+  try {
+    // Devuelve también el diagnóstico: si falla, queremos saber si el chat no
+    // se encontró, si no hay mensajes, o si están pero ninguno matchea.
+    const res = await client.pupPage.evaluate(async (chatId, cabecera) => {
+      // El id serializado no siempre está en _serialized: según la versión de
+      // WhatsApp Web la clave es un MsgKey (con toString) o un objeto plano.
+      // Probamos todas las formas antes de darnos por vencidos.
+      const serializar = (k) => {
+        if (!k) return null;
+        if (typeof k === "string") return k;
+        if (typeof k._serialized === "string") return k._serialized;
+        try {
+          const s = k.toString();
+          if (typeof s === "string" && s.includes("_")) return s;
+        } catch (e) { /* seguimos */ }
+        if (k.id) {
+          const remoto = k.remote?._serialized || (k.remote && String(k.remote)) || chatId;
+          const partes = [k.fromMe ? "true" : "false", remoto, k.id];
+          const part = k.participant?._serialized || (k.participant && String(k.participant));
+          if (part) partes.push(part);
+          return partes.join("_");
+        }
+        return null;
+      };
+
+      const chat = await window.WWebJS.getChat(chatId, { getAsModel: false });
+      if (!chat) return { id: null, motivo: "no encontré el chat" };
+      if (!chat.msgs) return { id: null, motivo: "el chat no tiene colección de mensajes" };
+
+      const msgs = chat.msgs.getModelsArray();
+      const propios = msgs.filter((m) => m?.id?.fromMe);
+
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i];
+        if (!m?.id?.fromMe) continue;
+        if (!(m.body || "").startsWith(cabecera)) continue;
+
+        const id = serializar(m.id);
+        return {
+          id,
+          motivo: id ? null : "encontré el mensaje pero no pude serializar su clave",
+          // Con esto sabemos qué forma tiene la clave en esta versión.
+          forma: typeof m.id,
+          claves: Object.keys(m.id || {}).slice(0, 10),
+        };
+      }
+
+      return {
+        id: null,
+        motivo: `${msgs.length} mensajes en el chat, ${propios.length} propios, ninguno arranca con la cabecera`,
+        muestra: propios.slice(-3).map((m) => (m.body || "").slice(0, 30)),
+      };
+    }, chatId, cabecera);
+
+    if (!res?.id) {
+      const extra = [
+        res?.muestra ? `últimos propios: ${JSON.stringify(res.muestra)}` : null,
+        res?.forma ? `forma de la clave: ${res.forma} ${JSON.stringify(res.claves || [])}` : null,
+      ].filter(Boolean).join(" | ");
+      console.warn(`⚠️ Vía 3: ${res?.motivo || "sin resultado"}${extra ? " | " + extra : ""}`);
+    }
+    return res?.id || null;
+  } catch (e) {
+    console.warn("⚠️ Vía 3 falló al consultar la página:", e.message);
+    return null;
+  }
+}
+
 // El payload del evento de reacción no es confiable: el emoji sale de
 // data.reactionText, un nombre de campo que la tabla moderna de WhatsApp puede
 // no usar (llega undefined), y el id del mensaje padre a veces trae el sufijo
@@ -1127,29 +1218,36 @@ function esperarIdDelEnviado(client, chatId, texto, ms = 10000) {
 // la verdad se lee del mensaje: getReactions() devuelve quién reaccionó y con
 // qué. Como recalcula todo el listado, además se autocorrige si se perdió algún
 // evento o el bot estuvo caído.
+// Message.getReactions() no sirve acá por dos motivos: corta si hasReaction es
+// false (y lo es cuando releemos justo después de reaccionar) y llama a
+// Store.Reactions.find(this.id._serialized), campo que esta versión de WhatsApp
+// no expone → "called find without an id". Como el id serializado ya lo tenemos
+// guardado, consultamos las reacciones directo, con la misma llamada que hace
+// la librería pero pasándole el id que sí funciona.
+async function leerReacciones(client, msgId) {
+  try {
+    const datos = await client.pupPage.evaluate(async (id) => {
+      const res = await window.Store.Reactions.find(id);
+      if (!res?.reactions?.length) return [];
+      return res.reactions.serialize();
+    }, msgId);
+
+    return { ok: true, reacciones: datos || [] };
+  } catch (e) {
+    console.warn(`⚠️ No pude leer las reacciones de ${msgId}:`, e.message);
+    return { ok: false, reacciones: [] };
+  }
+}
+
 async function sincronizarVotos(client, poll) {
   const ideaIds = Object.values(poll.mapping);
 
-  // Siempre releemos el mensaje: hay que pedirlo de nuevo para ver reacciones
-  // nuevas. Un objeto guardado del momento del envío trae hasReaction en false
-  // y getReactions() cortaría ahí sin mirar nada.
-  let mensaje;
-  try {
-    mensaje = await client.getMessageById(poll.msg_id);
-  } catch (e) {
-    console.warn(`⚠️ No pude leer el listado ${poll.msg_id}:`, e.message);
-    return false;
-  }
-  if (!mensaje) return false;
+  const lectura = await leerReacciones(client, poll.msg_id);
+  // Si la lectura falló no tocamos nada: cero reacciones leídas por error
+  // borraría los votos que ya estaban.
+  if (!lectura.ok) return false;
 
-  let reacciones;
-  try {
-    reacciones = await mensaje.getReactions();
-  } catch (e) {
-    console.warn(`⚠️ No pude leer las reacciones de ${poll.msg_id}:`, e.message);
-    return false;
-  }
-
+  const reacciones = lectura.reacciones;
   const votos = [];
   const sinMapear = [];
 
@@ -1174,12 +1272,52 @@ async function sincronizarVotos(client, poll) {
     `🗳️  Votos sincronizados (${poll.msg_id}): ${votos.length} voto(s)` +
     (sinMapear.length ? ` · emojis ignorados: ${sinMapear.join(" ")}` : "")
   );
-  return true;
+  return { ok: true, votos: votos.length };
 }
 
+const demorar = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// El hook de la librería nos avisa ANTES de guardar la reacción: primero llama
+// a onReaction y recién después ejecuta el bulkUpsert original. Si leemos en ese
+// instante, el mensaje todavía figura sin reacciones (hasReaction en false) y
+// getReactions() devuelve undefined → 0 votos. Por eso esperamos, y si sigue en
+// cero reintentamos una vez por si el guardado tardó más de lo previsto.
+const RETRASO_LECTURA = 1500;
+const RETRASO_REINTENTO = 2500;
+
+async function sincronizarVotosConEspera(client, poll) {
+  await demorar(RETRASO_LECTURA);
+
+  const res = await sincronizarVotos(client, poll);
+  if (!res?.ok || res.votos > 0) return res;
+
+  await demorar(RETRASO_REINTENTO);
+  return sincronizarVotos(client, poll);
+}
+
+// Una clave de mensaje puede llegar como string, como MsgKey (con _serialized o
+// toString) o como objeto plano {fromMe, remote, id, participant}, según la
+// versión de WhatsApp Web. Probamos todas para no quedarnos sin id.
 function idSerializado(raw) {
   if (!raw) return null;
-  return typeof raw === "string" ? raw : (raw._serialized || null);
+  if (typeof raw === "string") return raw;
+  if (typeof raw._serialized === "string") return raw._serialized;
+
+  try {
+    const s = raw.toString();
+    if (typeof s === "string" && s.includes("_")) return s;
+  } catch (e) { /* seguimos con la reconstrucción manual */ }
+
+  if (raw.id) {
+    const remoto = raw.remote?._serialized || (raw.remote && String(raw.remote));
+    if (!remoto) return null;
+    const partes = [raw.fromMe ? "true" : "false", remoto, raw.id];
+    const part = raw.participant?._serialized || (raw.participant && String(raw.participant));
+    if (part) partes.push(part);
+    return partes.join("_");
+  }
+
+  return null;
 }
 
 // Chat al que pertenece la reacción. El id del mensaje padre a veces no viene,
@@ -1238,7 +1376,7 @@ async function handleReaction(reaction, client) {
       if (!puedeSincronizar(poll.msg_id)) return;
 
       console.log(`👍 Reacción en ${chatId} → sincronizo listado ${poll.msg_id}`);
-      await sincronizarVotos(client, poll);
+      await sincronizarVotosConEspera(client, poll);
       return;
     }
 
@@ -1247,7 +1385,7 @@ async function handleReaction(reaction, client) {
     const poll = serializado ? db.getIdeaPoll(serializado) : null;
     if (!poll || !puedeSincronizar(poll.msg_id)) return;
 
-    await sincronizarVotos(client, poll);
+    await sincronizarVotosConEspera(client, poll);
   } catch (error) {
     console.error("❌ Error registrando voto de idea:", error.message);
   }

@@ -795,7 +795,7 @@ app.get("/ideas/:groupId", (req, res) => {
   if (!group) return res.status(404).send("<h1 style='text-align:center;'>Grupo no encontrado</h1>");
   if (!key || key !== groupToken) return res.send(paginaLogin(group, groupId, key));
 
-  const ideas = db.getIdeasList(groupId);
+  const ideas = db.getIdeasRanking(groupId);
   const maxVotos = ideas.reduce((max, i) => Math.max(max, i.votes), 0);
 
   res.send(`

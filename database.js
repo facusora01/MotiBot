@@ -2,7 +2,10 @@ const Database = require("better-sqlite3");
 const path = require("path");
 const crypto = require("crypto");
 
-const db = new Database(path.join(__dirname, "motivacional.db"));
+// Configurable para poder correr pruebas contra una base descartable (y, si
+// algún día hace falta, para montar la base fuera del contenedor).
+const DB_PATH = process.env.MOTIBOT_DB || path.join(__dirname, "motivacional.db");
+const db = new Database(DB_PATH);
 
 // ─── TABLAS ───────────────────────────────────────────────────────────────────
 db.exec(`
@@ -300,9 +303,22 @@ function addIdea(groupId, text, author, authorId) {
   return info.lastInsertRowid;
 }
 
-// Ordenadas por votos y, a igualdad, por antigüedad: la que se propuso primero
-// queda arriba en vez de bailar según el orden que devuelva SQLite.
+// Orden ESTABLE (por antigüedad). Es el que usa el listado del chat: si
+// ordenáramos por votos, cada idea cambiaría de número al recibir uno y el
+// 1️⃣ significaría algo distinto en cada listado — quien vota cree que su voto
+// se fue a otra idea.
 function getIdeasList(groupId) {
+  return db.prepare(`
+    SELECT i.*, (SELECT COUNT(*) FROM idea_votes v WHERE v.idea_id = i.id) AS votes
+    FROM ideas i
+    WHERE i.group_id = ?
+    ORDER BY i.id ASC
+  `).all(groupId);
+}
+
+// Para el panel web, donde sí interesa ver el ranking y no hay numeración que
+// respetar.
+function getIdeasRanking(groupId) {
   return db.prepare(`
     SELECT i.*, (SELECT COUNT(*) FROM idea_votes v WHERE v.idea_id = i.id) AS votes
     FROM ideas i
@@ -339,11 +355,19 @@ function deleteIdeas(groupId, ideaIds) {
 }
 
 // ─── VOTACIÓN DE IDEAS ────────────────────────────────────────────────────────
+// Un solo listado activo por grupo. Con dos, los votos de uno pisan los del
+// otro: cada sincronización recalcula desde las reacciones de SU mensaje, así
+// que el último en sincronizar borraría los votos del anterior. Además, cuando
+// la reacción llega sin el id del mensaje, hay que adivinar a cuál pertenece.
 function saveIdeaPoll(msgId, groupId, mapping) {
-  db.prepare(`
-    INSERT INTO idea_polls (msg_id, group_id, mapping) VALUES (?, ?, ?)
-    ON CONFLICT(msg_id) DO UPDATE SET mapping = excluded.mapping
-  `).run(msgId, groupId, JSON.stringify(mapping));
+  const guardar = db.transaction(() => {
+    db.prepare(`DELETE FROM idea_polls WHERE group_id = ? AND msg_id != ?`).run(groupId, msgId);
+    db.prepare(`
+      INSERT INTO idea_polls (msg_id, group_id, mapping) VALUES (?, ?, ?)
+      ON CONFLICT(msg_id) DO UPDATE SET mapping = excluded.mapping
+    `).run(msgId, groupId, JSON.stringify(mapping));
+  });
+  guardar();
 }
 
 function getIdeaPoll(msgId) {
@@ -450,6 +474,7 @@ module.exports = {
   deleteBirthday,
   addIdea,
   getIdeasList,
+  getIdeasRanking,
   countIdeas,
   countIdeasHoyDeAutor,
   deleteIdeas,
