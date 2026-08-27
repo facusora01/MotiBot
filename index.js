@@ -6,7 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const db = require("./database");
 const { getPhraseInstant, iniciarPool } = require("./phrases");
-const { handleCommand, handleReaction } = require("./commands");
+const { handleCommand, handleReaction, esSuperAdmin } = require("./commands");
 const { alertarRevinculacion } = require("./notify");
 const { respaldarSesion, restaurarSesionSiHaceFalta, borrarSesionYBackup } = require("./session-backup");
 const { getTunnelUrl } = require("./tunnel-url");
@@ -439,9 +439,8 @@ async function processMessage(message) {
   const from = message.from;
 
   try {
-    if (!from.endsWith("@g.us") && !from.endsWith("@lid")) return;
-
     const lowerBody = body.toLowerCase();
+
     const empiezaCon = (cmd) => lowerBody === cmd || lowerBody.startsWith(cmd + " ");
     const esComando =
       lowerBody.startsWith("/mbot") ||
@@ -451,6 +450,16 @@ async function processMessage(message) {
       empiezaCon("/idea") ||
       empiezaCon("/ideas");
     if (!esComando) return;
+
+    // Un grupo siempre trae message.author; el privado no. En privado MotiBot
+    // solo atiende /mbot phrase (y /mbot stop, que handleCommand filtra por
+    // permisos): el resto se descarta acá, sin loguear ni responder. La
+    // excepción es el super admin, cuyo privado funciona como un chat más.
+    // esSuperAdmin puede pegarle al contacto para resolver un @lid, por eso va
+    // último: solo corre para comandos reales fuera de la lista corta.
+    const esGrupo = from.endsWith("@g.us") || !!message.author;
+    const PRIVADOS_OK = ["/mbot phrase", "/mbot stop"];
+    if (!esGrupo && !PRIVADOS_OK.includes(lowerBody) && !(await esSuperAdmin(message))) return;
 
     const msgId = message.id?._serialized || message.id?.id;
     if (yaProcesado(msgId)) return;
