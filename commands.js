@@ -6,6 +6,12 @@ const { exec } = require("child_process");
 const userCooldowns = new Map();
 const COOLDOWN_TIME = 5 * 60 * 1000;
 
+// En privado MotiBot es solo un dispensador de frases: ventana propia y mucho
+// más larga que la de los grupos, y Map aparte para que pedir en un grupo no
+// consuma el turno del privado (ni al revés).
+const privateCooldowns = new Map();
+const PRIVATE_COOLDOWN_TIME = 12 * 60 * 60 * 1000;
+
 // Cache de admins (válido por 2 minutos para no consultar WhatsApp constantemente)
 const adminCache = new Map(); // { groupId_userId: { isAdmin: boolean, timestamp: number } }
 const ADMIN_CACHE_TIME = 2 * 60 * 1000;
@@ -47,6 +53,9 @@ setInterval(() => {
   }
   for (const [userId, ts] of userCooldowns) {
     if (now - ts >= COOLDOWN_TIME) userCooldowns.delete(userId);
+  }
+  for (const [userId, ts] of privateCooldowns) {
+    if (now - ts >= PRIVATE_COOLDOWN_TIME) privateCooldowns.delete(userId);
   }
   for (const [gid, val] of groupChatCache) {
     if (now - val.timestamp >= ADMIN_CACHE_TIME) groupChatCache.delete(gid);
@@ -100,20 +109,30 @@ const NO_REGISTRADO = "❌ ¡Todavía no me adoptaron en este chat! Un admin tie
 const SUPER_ADMINS = (process.env.SUPER_ADMINS || "")
   .split(",").map((s) => s.trim().replace(/\D/g, "")).filter(Boolean);
 
+// Un id @lid no es el teléfono: hay que pasar por el contacto para poder
+// compararlo contra SUPER_ADMINS (números reales del .env).
+async function resolverNumero(message) {
+  let rawSenderId = message.author || message.from;
+
+  if (rawSenderId && rawSenderId.includes('@lid')) {
+    try {
+      const contact = await message.getContact();
+      if (contact && contact.number) {
+        rawSenderId = contact.number + '@c.us';
+      }
+    } catch (e) {}
+  }
+
+  return String(rawSenderId || "").split('@')[0].split(':')[0];
+}
+
+async function esSuperAdmin(message) {
+  return SUPER_ADMINS.includes(await resolverNumero(message));
+}
+
 async function isAdmin(message, client) {
   try {
-    let rawSenderId = message.author || message.from;
-
-    if (rawSenderId && rawSenderId.includes('@lid')) {
-      try {
-        const contact = await message.getContact();
-        if (contact && contact.number) {
-          rawSenderId = contact.number + '@c.us';
-        }
-      } catch (e) {}
-    }
-
-    const number = rawSenderId.split('@')[0].split(':')[0];
+    const number = await resolverNumero(message);
 
     if (SUPER_ADMINS.includes(number)) return true;
 
@@ -352,6 +371,69 @@ function construirListadoIdeas(ideas) {
   return { texto, mapping };
 }
 
+// ─── BOTÓN DE PÁNICO ──────────────────────────────────────────────────────────
+// El chequeo de permisos queda afuera (lo hace el llamador con resolverNumero):
+// a quien no está autorizado no se le responde nada en ningún lado.
+async function detenerEmergencia(message, number) {
+  await message.reply("⚠️ *PROTOCOLO DE EMERGENCIA ACTIVADO* ⚠️\n\nApagando procesos `motibot` y `cloudflare-tunnel` inmediatamente. Para volver a subir el sistema, deberás entrar por SSH al servidor.");
+
+  console.error(`🚨 DETENCIÓN DE EMERGENCIA solicitada por ${number} a las ${new Date().toISOString()}`);
+
+  exec("pm2 stop motibot cloudflare-tunnel", (error, stdout, stderr) => {
+    if (error) {
+      console.error(`❌ Error al ejecutar el stop: ${error.message}`);
+      return;
+    }
+    console.log(`✅ Procesos detenidos: ${stdout}`);
+  });
+}
+
+// ─── CHAT PRIVADO ─────────────────────────────────────────────────────────────
+// Un grupo siempre trae message.author (el remitente dentro del grupo); en el
+// privado no existe. Miramos las dos cosas para no depender solo del sufijo del
+// chat: los ids @lid de WhatsApp son privados, pero el día que un grupo llegue
+// con uno, author lo delata igual y sigue tratándose como grupo.
+function esChatPrivado(message) {
+  const chatId = String(message.fromMe ? message.to : message.from || "");
+  return !chatId.endsWith("@g.us") && !message.author;
+}
+
+// En privado MotiBot hace UNA sola cosa: dar una frase con /mbot phrase. No
+// registra el chat en la base (no hay grupo que adoptar), no contesta ningún
+// otro comando y no manda el "todavía no me adoptaron" — cualquier otra cosa
+// se ignora en silencio. Los grupos no pasan por acá.
+async function handlePrivateCommand(message) {
+  const userId = String(message.from || "");
+  const now = Date.now();
+
+  // El super admin pide sin límite; al resto le toca la ventana de 12 h.
+  const superAdmin = await esSuperAdmin(message);
+
+  if (!superAdmin) {
+    const lastUsed = privateCooldowns.get(userId);
+    const timeLeft = lastUsed ? lastUsed + PRIVATE_COOLDOWN_TIME - now : 0;
+
+    if (timeLeft > 0) {
+      const horas = Math.ceil(timeLeft / (60 * 60 * 1000));
+      return message.reply(`⏳ Ya te pasé la tuya. Te espero en ${horas} h para la próxima.`);
+    }
+  }
+
+  // Sin grupo no hay librería custom ni idioma configurado: siempre el pool
+  // clásico en español, pre-cargado (respuesta instantánea).
+  const { getPhraseInstant } = require("./phrases");
+  const frase = getPhraseInstant("es");
+
+  const emojis = ["🌟", "💪", "🔥", "✨", "🚀", "🌈", "⚡", "🎯", "💡", "🏆"];
+  const emoji = emojis[Math.floor(Math.random() * emojis.length)];
+
+  if (!superAdmin) privateCooldowns.set(userId, now);
+
+  return message.reply(`${emoji} _"${frase.texto}"_
+
+— *${frase.autor}*`);
+}
+
 // ─── HANDLER PRINCIPAL ────────────────────────────────────────────────────────
 async function handleCommand(message, client) {
   try {
@@ -359,32 +441,41 @@ async function handleCommand(message, client) {
     const lowerBody = body.toLowerCase();
     const groupId = message.fromMe ? message.to : message.from;
 
-    let group = db.getGroup(groupId);
     const parts = body.split(/\s+/);
     const subcommand = (parts[1] || "").toLowerCase();
     const arg = (parts[2] || "").toLowerCase();
 
-    // 🚨 BOTÓN DE PÁNICO (Solo Sora / Super Admins)
-    if (subcommand === "stop") {
-      const senderId = message.author || message.from;
-      const number = senderId.split('@')[0].split(':')[0];
+    // Privado: para el super admin no hay recorte (su chat se maneja como
+    // cualquier otro: puede /mbot add, list, stop, lo que sea). Para el resto,
+    // solo /mbot phrase con su espera; todo lo demás en silencio — incluido el
+    // /mbot stop de un número no autorizado, que acá ni se reconoce como
+    // comando. El corte va ANTES de tocar la base para que el privado de un
+    // usuario común nunca quede registrado como equipo.
+    if (esChatPrivado(message)) {
+      const superAdmin = await esSuperAdmin(message);
 
-      if (!SUPER_ADMINS.includes(number)) {
-        return message.reply("⛔ Error de acceso: No tenés autorización para ejecutar protocolos de emergencia.");
+      if (!superAdmin) {
+        if (lowerBody === "/mbot phrase") return handlePrivateCommand(message);
+        return;
       }
 
-      await message.reply("⚠️ *PROTOCOLO DE EMERGENCIA ACTIVADO* ⚠️\n\nApagando procesos `motibot` y `cloudflare-tunnel` inmediatamente. Para volver a subir el sistema, deberás entrar por SSH al servidor.");
+      // Mientras el super admin no adopte su propio privado con /mbot add, le
+      // damos la frase por la vía corta (sin límite) en vez del "no me adoptaron".
+      if (lowerBody === "/mbot phrase" && !db.getGroup(groupId)?.active) {
+        return handlePrivateCommand(message);
+      }
+    }
 
-      console.error(`🚨 DETENCIÓN DE EMERGENCIA solicitada por ${number} a las ${new Date().toISOString()}`);
+    let group = db.getGroup(groupId);
 
-      exec("pm2 stop motibot cloudflare-tunnel", (error, stdout, stderr) => {
-        if (error) {
-          console.error(`❌ Error al ejecutar el stop: ${error.message}`);
-          return;
-        }
-        console.log(`✅ Procesos detenidos: ${stdout}`);
-      });
-      return;
+    // 🚨 BOTÓN DE PÁNICO (Solo Sora / Super Admins)
+    if (subcommand === "stop") {
+      // A quien no está autorizado no se le contesta nada, ni en grupo ni en
+      // privado: para el resto del mundo este comando no existe.
+      const number = await resolverNumero(message);
+      if (!SUPER_ADMINS.includes(number)) return;
+
+      return detenerEmergencia(message, number);
     }
 
     // ── /new "frase" - autor ──────────────────────────────────────────────────
@@ -1378,4 +1469,4 @@ async function handleReaction(reaction, client) {
   }
 }
 
-module.exports = { handleCommand, clearAdminCache, handleReaction, sincronizarVotos };
+module.exports = { handleCommand, clearAdminCache, handleReaction, sincronizarVotos, esSuperAdmin };
