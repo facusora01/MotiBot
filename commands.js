@@ -1,5 +1,6 @@
 const db = require("./database");
 const { getTunnelUrl } = require("./tunnel-url");
+const { handleAdminPanel, AYUDA: AYUDA_PANEL } = require("./panel");
 
 const { exec } = require("child_process");
 
@@ -96,7 +97,24 @@ Acá tenés todo lo que puedo hacer por vos y tu equipo:
 ▸ \`/mbot time\` — ⏳ Cuenta regresiva para activación de librería custom
 ▸ \`/mbot status\` — Ver reporte detallado de configuración
 ▸ \`/mbot help\` — Ver este menú de nuevo
+
+_💡 Tip: en vez de \`/mbot\` también podés arrobarme: \`@MotiBot phrase\`, \`@MotiBot help\`, etc._
 `.trim();
+
+// Comandos reservados: NO salen en el `/mbot help` de nadie, ni siquiera en un
+// grupo donde el mercado esté habilitado. El único lugar donde se listan es el
+// help que pide el super admin desde su chat privado.
+const HELP_SECRETO = `
+
+━━━━━━━━━━━━━━━━━━━━
+🔐 *Comandos reservados* _(solo vos)_
+
+*🌾 Mercado de granos:*
+▸ \`/mbot mercado\` — Cotización de la pizarra, en los grupos donde lo habilitaste
+
+*🚨 Emergencia:*
+▸ \`/mbot stop\` — Apagar motibot y el túnel (se vuelve a levantar por SSH)
+▸ \`/mbot sync\` — Sincronización global de grupos`;
 
 // Antes estos comandos cortaban en silencio si el chat no estaba registrado, y
 // el bot parecía colgado: leía el comando y no contestaba nada. Ahora avisan.
@@ -466,6 +484,13 @@ async function handleCommand(message, client) {
       }
     }
 
+    // Panel del super admin: solo en su chat privado. En un grupo el comando ni
+    // existe (tampoco para él): la gestión de otros equipos no se expone ahí.
+    if (lowerBody === "/admin" || lowerBody.startsWith("/admin ")) {
+      if (!esChatPrivado(message) || !(await esSuperAdmin(message))) return;
+      return handleAdminPanel(message, client);
+    }
+
     let group = db.getGroup(groupId);
 
     // 🚨 BOTÓN DE PÁNICO (Solo Sora / Super Admins)
@@ -814,7 +839,7 @@ async function handleCommand(message, client) {
     const UNKNOWN_MSG = `❓ ¡Epa! Ese comando no lo tengo en mi memoria. Usá \`/mbot help\` para ver mi manual de instrucciones.`;
 
     // parts = ["/mbot", subcommand, arg?] → length 2 = sin arg extra, 3 = con arg.
-    const strictNoArg = ["phrase", "status", "help", "add", "remove", "list", "stop", "time"];
+    const strictNoArg = ["phrase", "status", "help", "add", "remove", "list", "stop", "time", "mercado"];
     const needsOneArg = ["lang", "use"];
     const optionalOneArg = ["clock", "freq"];
 
@@ -827,6 +852,12 @@ async function handleCommand(message, client) {
 
     // ─── PROCESAMIENTO DE COMANDOS VALIDADOS ──────────────────────────────────
     if (subcommand === "help") {
+      // El manual completo (reservados + panel) sale únicamente en el privado
+      // del super admin: en un grupo se ve el mismo help que ve cualquiera,
+      // aunque quien lo pida sea él.
+      if (esChatPrivado(message) && (await esSuperAdmin(message))) {
+        return message.reply(`${HELP_TEXT}${HELP_SECRETO}\n\n━━━━━━━━━━━━━━━━━━━━\n${AYUDA_PANEL}`);
+      }
       return message.reply(HELP_TEXT);
     }
 
@@ -952,6 +983,29 @@ async function handleCommand(message, client) {
       } catch (error) {
         console.error("❌ Error en phrase:", error);
         return message.reply("⚠️ Hubo un error al buscar la frase.");
+      }
+    }
+
+    // --- mercado de granos ---
+    // No pide admin (es solo lectura), pero sí que el super admin lo haya
+    // habilitado en este equipo desde su panel.
+    if (subcommand === "mercado") {
+      // Silencio: donde el super admin no lo habilitó, el comando no existe. Ni
+      // "no está habilitado" contestamos — eso ya revelaría que la función existe
+      // y abriría la puerta a que se la pidan al bot en cada grupo. Va antes que
+      // el chequeo de registro para no delatarlo tampoco por esa vía.
+      if (!db.isMarketEnabled(groupId)) return;
+
+      const group = db.getGroup(groupId);
+      if (!group || !group.active) return;
+
+      try {
+        const { getMercado } = require("./mercado");
+        const { texto } = await getMercado();
+        return message.reply(texto);
+      } catch (error) {
+        console.error("❌ Error leyendo la pizarra de granos:", error.message);
+        return message.reply("⚠️ No pude leer la pizarra de granos ahora mismo. Probá de nuevo en un rato.");
       }
     }
 

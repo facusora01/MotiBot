@@ -10,6 +10,7 @@ const { handleCommand, handleReaction, esSuperAdmin } = require("./commands");
 const { alertarRevinculacion } = require("./notify");
 const { respaldarSesion, restaurarSesionSiHaceFalta, borrarSesionYBackup } = require("./session-backup");
 const { getTunnelUrl } = require("./tunnel-url");
+const { getMercado, fechaPizarraISO } = require("./mercado");
 
 const HORA_ENVIO = process.env.HORA_ENVIO || "08:00";
 
@@ -167,6 +168,49 @@ async function enviarCumpleanios(client, group) {
       console.log(`🎂 [${hoy.iso}] Saludo enviado a ${nombre} en ${group.group_name}`);
     } catch (error) {
       console.error(`❌ Error saludando a ${cumple.name} en ${group.group_name}:`, error.message);
+    }
+  }
+}
+
+// Mercado de granos: opt-in por grupo (lo habilita el super admin desde su
+// privado). Sale una vez por día y solo si la pizarra del feed es la de HOY:
+// los fines de semana y feriados no hay rueda y el feed sigue devolviendo la
+// última, así que sin este chequeo el domingo repetiríamos la del viernes.
+async function enviarMercado(client, ahoraHHMM) {
+  const grupos = db.getMarketGroups();
+  if (!grupos.length) return;
+
+  const hoy = fechaArgentina();
+  const pendientes = grupos.filter(
+    (g) => (g.market_time || "09:00") === ahoraHHMM && g.market_last_sent !== hoy.iso
+  );
+  if (!pendientes.length) return;
+
+  let mercado;
+  try {
+    mercado = await getMercado();
+  } catch (error) {
+    console.error("❌ No pude leer la pizarra de granos:", error.message);
+    return;
+  }
+
+  if (fechaPizarraISO(mercado.fecha) !== hoy.iso) {
+    console.log(`🌾 Pizarra del ${mercado.fecha}: no es la de hoy (${hoy.iso}). No la mando.`);
+    return;
+  }
+
+  for (const grupo of pendientes) {
+    try {
+      await conTimeout(
+        client.sendMessage(grupo.group_id, mercado.texto),
+        REPLY_TIMEOUT,
+        `mercado a ${grupo.group_name}`
+      );
+      // Recién acá: si el envío falló, en el próximo tick se reintenta.
+      db.markMarketSent(grupo.group_id, hoy.iso);
+      console.log(`🌾 [${hoy.iso}] Mercado enviado a ${grupo.group_name}`);
+    } catch (error) {
+      console.error(`❌ Error enviando el mercado a ${grupo.group_name}:`, error.message);
     }
   }
 }
@@ -342,6 +386,9 @@ client.on("ready", async () => {
 
   armarWatchdog();
 
+  // Con la sesión viva ya sabemos con qué ids nos arrobaría la gente.
+  await registrarIdsDelBot();
+
   // Pre-cargamos el pool para que /mbot phrase responda al instante; idempotente.
   iniciarPool();
 
@@ -397,6 +444,8 @@ client.on("ready", async () => {
         }
       }
     }
+
+    await enviarMercado(client, now);
   } catch (err) {
     console.error("⚠️ Error en tick del scheduler (se omite, no se cae el bot):", err.message);
   }
@@ -428,8 +477,74 @@ const ARRANQUE_TS = Math.floor(Date.now() / 1000) - 60;
 let timeoutsReplySeguidos = 0;
 const MAX_TIMEOUTS_REPLY = 3;
 
+// --- ARROBAR AL BOT ---------------------------------------------------------
+// Además de /mbot, el bot atiende cuando lo arroban: "@MotiBot phrase" equivale
+// a "/mbot phrase". WhatsApp escribe la mención en el body como "@<número>"
+// (o "@<lid>" en cuentas nuevas), así que necesitamos saber con qué ids se
+// identifica esta sesión; se completan en 'ready'.
+const idsDelBot = new Set();
+
+function sumarId(raw) {
+  const user = raw?.user || (typeof raw === "string" ? String(raw).split("@")[0] : null);
+  if (user) idsDelBot.add(String(user));
+}
+
+async function registrarIdsDelBot() {
+  for (const raw of [client.info?.wid, client.info?.me, client.info?.lid]) sumarId(raw);
+
+  const env = getBotPhone();
+  if (env) idsDelBot.add(env);
+
+  // En cuentas nuevas WhatsApp arroba por @lid, que no siempre viaja en
+  // client.info. Se lo preguntamos a la página; si esta versión no expone el
+  // helper, seguimos con el número (la mayoría de los grupos arroban así).
+  try {
+    const lid = await client.pupPage.evaluate(() => {
+      const u = window.Store?.User;
+      const wid = u?.getMaybeMeLidUser?.() || u?.getMeLidUser?.();
+      return wid?.user || wid?._serialized || null;
+    });
+    if (lid) sumarId(lid);
+  } catch (e) {
+    console.warn("⚠️ No pude leer mi @lid desde la página:", e.message);
+  }
+
+  console.log(`🏷️  Me reconozco arrobado como: ${[...idsDelBot].join(", ") || "(ninguno todavía)"}`);
+}
+
+// Comandos que viven en la raíz (no cuelgan de /mbot): "@MotiBot idea X" tiene
+// que volverse "/idea X" y no "/mbot idea X".
+const COMANDOS_RAIZ = ["new", "add", "birthday", "idea", "ideas", "admin"];
+
+// Devuelve el comando equivalente, o null si el mensaje no nos arroba. Exigimos
+// que la mención ABRA el mensaje: así un "gracias @MotiBot" en medio de una
+// charla no dispara nada, y la intención de darle una orden es inequívoca.
+function comandoDeArroba(message) {
+  const body = (message.body || "").trim();
+  const m = body.match(/^@(\S+)\s*([\s\S]*)$/);
+  if (!m) return null;
+
+  const token = m[1];
+  const soloDigitos = token.replace(/\D/g, "");
+  const esElBot = /^motibot$/i.test(token) || (soloDigitos && idsDelBot.has(soloDigitos));
+  if (!esElBot) return null;
+
+  const resto = (m[2] || "").trim();
+  if (!resto) return "/mbot help";
+  if (resto.startsWith("/")) return resto; // "@MotiBot /mbot phrase"
+
+  const primera = resto.split(/\s+/)[0].toLowerCase();
+  return COMANDOS_RAIZ.includes(primera) ? `/${resto}` : `/mbot ${resto}`;
+}
+
 async function processMessage(message) {
   if (message.timestamp && message.timestamp < ARRANQUE_TS) return;
+
+  // Si nos arrobaron, reescribimos el body al comando equivalente y de ahí en
+  // más el mensaje viaja como cualquier otro: todo lo de abajo (y commands.js)
+  // lo ve como si hubieran tipeado /mbot.
+  const porArroba = comandoDeArroba(message);
+  if (porArroba) message.body = porArroba;
 
   const body = message.body?.trim() || "";
 
@@ -448,7 +563,8 @@ async function processMessage(message) {
       empiezaCon("/add") ||
       empiezaCon("/birthday") ||
       empiezaCon("/idea") ||
-      empiezaCon("/ideas");
+      empiezaCon("/ideas") ||
+      empiezaCon("/admin");
     if (!esComando) return;
 
     // Un grupo siempre trae message.author; el privado no. En privado MotiBot

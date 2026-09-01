@@ -25,6 +25,9 @@ db.exec(`
     custom_start_date    DATETIME,
     send_time            TEXT DEFAULT '08:00',
     frequency            INTEGER DEFAULT 1,
+    market_enabled       INTEGER DEFAULT 0,
+    market_time          TEXT DEFAULT '09:00',
+    market_last_sent     TEXT,
     FOREIGN KEY (group_id) REFERENCES groups(group_id)
   );
 
@@ -91,6 +94,21 @@ db.exec(`
 // ─── MIGRACIONES AUTOMÁTICAS ──────────────────────────────────────────────────
 try {
   db.exec(`ALTER TABLE group_settings ADD COLUMN frequency INTEGER DEFAULT 1`);
+} catch (e) {}
+
+// Mercado de granos: opt-in por grupo, lo habilita el super admin desde su
+// privado. market_last_sent (YYYY-MM-DD) evita repetir el envio en el dia.
+try {
+  db.exec(`ALTER TABLE group_settings ADD COLUMN market_enabled INTEGER DEFAULT 0`);
+  console.log("🔧 Migración: Columna 'market_enabled' lista.");
+} catch (e) {}
+
+try {
+  db.exec(`ALTER TABLE group_settings ADD COLUMN market_time TEXT DEFAULT '09:00'`);
+} catch (e) {}
+
+try {
+  db.exec(`ALTER TABLE group_settings ADD COLUMN market_last_sent TEXT`);
 } catch (e) {}
 
 try {
@@ -163,6 +181,21 @@ function removeGroup(groupId) {
 
 function getActiveGroups() {
   return db.prepare(`SELECT * FROM groups WHERE active = 1`).all();
+}
+
+// Activos + dados de baja: el panel del super admin los lista todos para poder
+// reactivar uno sin tener que volver a pasar por /mbot add en el grupo. Orden
+// por id de alta y nada más: el panel numera las filas, y ordenar por estado
+// haría que dar de baja un grupo renumere a todos los demás.
+function getAllGroups() {
+  return db.prepare(`SELECT * FROM groups ORDER BY id ASC`).all();
+}
+
+// Reactiva un grupo ya conocido sin tocar su nombre ni su token.
+function reactivateGroup(groupId) {
+  const info = db.prepare(`UPDATE groups SET active = 1 WHERE group_id = ?`).run(groupId);
+  db.prepare(`INSERT OR IGNORE INTO group_settings (group_id) VALUES (?)`).run(groupId);
+  return info.changes > 0;
 }
 
 function getGroup(groupId) {
@@ -467,8 +500,47 @@ function aplicarVotosDePoll(groupId, pollMsgId, votos) {
   return aplicar();
 }
 
+// --- MERCADO DE GRANOS -------------------------------------------------------
+function setMarketEnabled(groupId, enabled) {
+  db.prepare(`INSERT OR IGNORE INTO group_settings (group_id) VALUES (?)`).run(groupId);
+  const info = db.prepare(`UPDATE group_settings SET market_enabled = ? WHERE group_id = ?`)
+    .run(enabled ? 1 : 0, groupId);
+  return info.changes > 0;
+}
+
+function setMarketTime(groupId, time) {
+  db.prepare(`INSERT OR IGNORE INTO group_settings (group_id) VALUES (?)`).run(groupId);
+  db.prepare(`UPDATE group_settings SET market_time = ? WHERE group_id = ?`).run(time, groupId);
+}
+
+function isMarketEnabled(groupId) {
+  const row = db.prepare(`SELECT market_enabled FROM group_settings WHERE group_id = ?`).get(groupId);
+  return !!row?.market_enabled;
+}
+
+// Solo grupos vivos: uno dado de baja con el mercado prendido no debe recibir nada.
+function getMarketGroups() {
+  return db.prepare(`
+    SELECT g.group_id, g.group_name, s.market_time, s.market_last_sent
+    FROM groups g
+    JOIN group_settings s ON s.group_id = g.group_id
+    WHERE g.active = 1 AND s.market_enabled = 1
+  `).all();
+}
+
+function markMarketSent(groupId, hoyISO) {
+  db.prepare(`UPDATE group_settings SET market_last_sent = ? WHERE group_id = ?`).run(hoyISO, groupId);
+}
+
 module.exports = {
   addGroup,
+  getAllGroups,
+  reactivateGroup,
+  setMarketEnabled,
+  setMarketTime,
+  isMarketEnabled,
+  getMarketGroups,
+  markMarketSent,
   removeGroup,
   getActiveGroups,
   getGroup,
