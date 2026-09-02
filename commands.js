@@ -573,53 +573,38 @@ _→ almacenaje 0,35% mensual · tasa 8% anual_
 ━━━━━━━━━━━━━━━━━━━━
 *1) ALMACENAJE* — lo que te cuesta tener una tonelada guardada un mes.
 
-▸ *Si lo dejás en el acopio:* está en tu liquidación, en el renglón de
-gastos de almacenaje. Suele venir como un *porcentaje mensual* del valor.
-Cargalo tal cual, con el signo %: da igual si lo ponés antes o después
-del número, y si usás coma o punto.
+▸ *Si lo dejás en el acopio:* está en tu liquidación, en el renglón de gastos de almacenaje. Suele venir como un *porcentaje mensual* del valor: cargalo tal cual, con el signo %. Da igual si lo ponés antes o después del número, y si usás coma o punto.
 
-▸ *Si usás silobolsa propia:* sumá bolsa + embolsado + extracción y dividí
-por las toneladas que entran y por los meses que la vas a tener.
-_Ejemplo: US$ 400 la bolsa con todo, 200 toneladas, 6 meses_
-_→ 400 ÷ 200 ÷ 6 = US$ 0,33 por tonelada por mes._
+▸ *Si usás silobolsa propia:* sumá bolsa + embolsado + extracción, y dividí por las toneladas que entran y por los meses que la vas a tener.
+_Ejemplo: US$ 400 la bolsa con todo, 200 toneladas, 6 meses → 400 ÷ 200 ÷ 6 = US$ 0,33 por tonelada por mes._
 Sin el signo % lo tomo como dólares por tonelada por mes.
 
 ▸ *Si el silo es tuyo y ya está pagado:* podés poner \`0\`.
 
 ━━━━━━━━━━━━━━━━━━━━
-*2) TASA* — cuánto te cuesta por año tener la plata inmovilizada en grano
-en vez de cobrada. Va en *porcentaje anual y en dólares*, sin el signo %.
+*2) TASA* — cuánto te cuesta por año tener la plata inmovilizada en grano en vez de cobrada. Va en *porcentaje anual y en dólares*, sin el signo %.
 
-▸ *Si tenés deuda* (prefinanciación, crédito en dólares, tarjeta agro):
-poné la tasa de ese crédito. Figura en el contrato o en el resumen.
-Es lo que te cuesta de verdad seguir esperando.
+▸ *Si tenés deuda* (prefinanciación, crédito en dólares, tarjeta agro): poné la tasa de ese crédito, que figura en el contrato o en el resumen. Es lo que te cuesta de verdad seguir esperando.
 
-▸ *Si no tenés deuda:* poné lo que rendiría esa plata colocada en dólares
-—un plazo fijo en dólares, una caución—. Es lo que dejás de ganar.
+▸ *Si no tenés deuda:* poné lo que rendiría esa plata colocada en dólares, como un plazo fijo en dólares o una caución. Es lo que dejás de ganar.
 
-▸ *Si no tenés idea:* poné \`0\` y la cuenta sale contando solo el
-almacenaje. Va a dar mejor que la realidad, pero no te inventa nada.
+▸ *Si no tenés idea:* poné \`0\` y la cuenta sale contando solo el almacenaje. Va a dar mejor que la realidad, pero no te inventa nada.
 
 ━━━━━━━━━━━━━━━━━━━━
 *Ejemplos completos*
 
 \`/mbot carry costos 0,35% 8\`
-_Dejo el grano en el acopio, me cobran 0,35% por mes, y mi
-prefinanciación está al 8% anual._
+_Dejo el grano en el acopio, me cobran 0,35% por mes, y mi prefinanciación está al 8% anual._
 
 \`/mbot carry costos 0,33 6\`
-_Silobolsa propia a US$ 0,33 por tonelada por mes, y la plata me rendiría
-un 6% anual si la tuviera cobrada._
+_Silobolsa propia a US$ 0,33 por tonelada por mes, y la plata me rendiría un 6% anual si la tuviera cobrada._
 
 \`/mbot carry costos 0 0\`
-_Silo propio ya pagado y no cuento costo del dinero: el resultado es lo que
-paga el mercado, sin ningún descuento._
+_Silo propio ya pagado y no cuento costo del dinero: el resultado es lo que paga el mercado, sin ningún descuento._
 
 ━━━━━━━━━━━━━━━━━━━━
 *¿No tenés ninguno de los dos a mano?*
-Pedí \`/mbot carry soja\` igual: te muestro cuánto paga el mercado
-por mes de espera, sin suponer nada tuyo. Con eso solo ya podés decidir,
-porque la pregunta se vuelve \"¿me cuesta más o menos que eso?\".
+Pedí \`/mbot carry soja\` igual: te muestro cuánto paga el mercado por mes de espera, sin suponer nada tuyo. Con eso solo ya podés decidir, porque la pregunta se vuelve \"¿me cuesta más o menos que eso?\".
 `.trim();
 // Guía de las funciones de granos, en castellano y con ejemplos. Existe
 // porque las descripciones de una línea del menú no alcanzan: "carry" es
@@ -632,45 +617,29 @@ Cuatro cosas, de la más simple a la más pesada.
 
 *1️⃣ La pizarra del día*
 \`/mbot mercado\`
-Los precios de hoy de trigo, soja, maíz, sorgo y girasol, con cuánto
-cambiaron respecto de ayer y el dólar. Un admin puede hacer que llegue sola
-todos los días con \`/mbot mercado on\`.
+Los precios de hoy de trigo, soja, maíz, sorgo y girasol, con cuánto cambiaron respecto de ayer y el dólar. Un admin puede hacer que llegue sola todos los días con \`/mbot mercado on\`.
 
 *2️⃣ Que te avisen cuando llegue a un precio*
 \`/mbot alerta soja 600000\`
-Vos ponés el número; el día que la pizarra lo toque, te aviso acá. El
-criterio es tuyo: yo no sugiero precios, solo miro el tablero todos los
-días, que es lo que vos no podés hacer.
+Vos ponés el número; el día que la pizarra lo toque, te aviso acá. El criterio es tuyo: yo no sugiero precios, solo miro el tablero todos los días, que es lo que vos no podés hacer.
 Te aviso *una sola vez* y la borro, para no repetirlo cada día.
 Ver las tuyas: \`/mbot alertas\` · Borrar: \`/mbot alerta borrar 1\`
 
 *3️⃣ ¿El precio de hoy es alto o bajo?*
 \`/mbot precio soja\`
-Te muestro dónde cae el precio de hoy comparado con su propia historia: el
-promedio de las últimas 30 y 90 ruedas, el mínimo y el máximo del año, y
-cuántas de esas ruedas estuvieron por debajo del de hoy.
-Va en dólares y en pesos. *Mirá el de dólares*: el de pesos sube también
-por inflación y devaluación, así que un \"+8%\" en pesos puede no ser mercado.
+Te muestro dónde cae el precio de hoy comparado con su propia historia: el promedio de las últimas 30 y 90 ruedas, el mínimo y el máximo del año, y cuántas de esas ruedas estuvieron por debajo del de hoy.
+Va en dólares y en pesos. *Mirá el de dólares*: el de pesos sube también por inflación y devaluación, así que un \"+8%\" en pesos puede no ser mercado.
 No es un pronóstico. No digo si va a subir ni si conviene vender.
 
 *4️⃣ ¿Vendo ahora o guardo?*
 \`/mbot carry soja\`
-El mercado a término paga un precio distinto por entregar más adelante. Si
-esa diferencia le gana a lo que te cuesta tener el grano guardado, el
-mercado te está pagando por esperar. Si no, te está pagando por vender ya.
+El mercado a término paga un precio distinto por entregar más adelante. Si esa diferencia le gana a lo que te cuesta tener el grano guardado, el mercado te está pagando por esperar. Si no, te está pagando por vender ya.
 
-Es una resta, no una predicción, y necesita *tus dos números*:
-▸ *Almacenaje* — lo que te cuesta tener una tonelada guardada un mes, en
-dólares. La tarifa del acopio, o la silobolsa prorrateada.
-▸ *Tasa* — el costo anual del dinero que no cobrás mientras no vendés.
+Funciona *sin configurar nada*: te digo cuánto paga el mercado por mes de espera. Ahí la pregunta se vuelve fácil: ¿guardar te cuesta más o menos que eso?
 
-Funciona *sin configurar nada*: te digo cuánto paga el mercado por mes de
-espera. Ahí la pregunta se vuelve fácil: ¿guardar te cuesta más o menos que eso?
+Y si querés la resta completa, cargás tus dos números una vez. \`/mbot carry costos\` te explica de dónde sacarlos: el almacenaje sale de tu liquidación del acopio o del costo de la silobolsa, y la tasa es la de tu deuda o lo que rendiría esa plata colocada.
 
-Y si querés la resta completa, cargás tus dos números una vez:
-\`/mbot carry costos\` te explica de dónde sacarlos
-No pongo valores por defecto a propósito: el que tiene silo propio y el que
-alquila tienen respuestas opuestas, y las dos están bien.
+No pongo valores por defecto a propósito: el que tiene silo propio y el que alquila tienen respuestas opuestas, y las dos están bien.
 
 ━━━━━━━━━━━━━━━━━━━━
 _Todo esto es información de referencia y nunca una recomendación de venta._
