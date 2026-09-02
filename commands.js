@@ -1082,15 +1082,23 @@ async function handleCommand(message, client) {
         // Acepta "0,35%" (porcentaje mensual del valor, como cobra el acopio)
         // y "0,33" (dólares por tonelada por mes, silobolsa propia).
         const crudo = String(parts[3] || "").replace(",", ".").trim();
+        const crudoTasa = String(parts[4] || "").replace(",", ".").replace("%", "").trim();
         const esPct = crudo.endsWith("%");
         const almacenaje = Number(esPct ? crudo.slice(0, -1) : crudo);
-        const tasa = Number(String(parts[4] || "").replace(",", ".").replace("%", ""));
+        const tasa = Number(crudoTasa);
+
+        // Number("") es 0, no NaN: sin este chequeo un `/mbot carry costos`
+        // pelado guardaba "almacenaje gratis y dinero gratis" en silencio, y
+        // con esos supuestos cualquier carry da positivo. Un cero explícito sí
+        // es válido (silo propio ya pagado), un campo vacío no.
+        const faltanDatos = !crudo || !crudoTasa;
 
         // Un almacenaje en dólares por encima de 50 es un error de tipeo; en
         // porcentaje, cualquier cosa arriba de 5% mensual también.
         const topeAlmacenaje = esPct ? 5 : 50;
 
-        if (!Number.isFinite(almacenaje) || almacenaje < 0 || almacenaje > topeAlmacenaje ||
+        if (faltanDatos ||
+            !Number.isFinite(almacenaje) || almacenaje < 0 || almacenaje > topeAlmacenaje ||
             !Number.isFinite(tasa) || tasa < 0 || tasa > 100) {
           return message.reply(
             EXPLICACION_COSTOS
@@ -1113,7 +1121,7 @@ async function handleCommand(message, client) {
 
         db.setCarryCostos(groupId, almacenaje, esPct ? "pct" : "usd", tasa);
         return message.reply(
-          `⚙️ Anotado: almacenaje *${esPct ? `${almacenaje}% mensual del valor` : `US$ ${almacenaje}/t/mes`}* y costo del dinero *${tasa}% anual* en dólares.` +
+          `⚙️ Anotado: almacenaje *${esPct ? `${String(almacenaje).replace(".", ",")}% mensual del valor` : `US$ ${String(almacenaje).replace(".", ",")}/t/mes`}* y costo del dinero *${tasa}% anual* en dólares.` +
           `\n\nAhora podés pedir \`/mbot carry soja\` (o trigo, o maíz).`
         );
       }
