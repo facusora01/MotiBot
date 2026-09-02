@@ -105,6 +105,7 @@ Acá tenés todo lo que puedo hacer por vos y tu equipo:
 ▸ \`/mbot alertas\` — Ver las alertas de este chat
 ▸ \`/mbot precio soja\` — Dónde cae el precio de hoy contra su historia
 ▸ \`/mbot carry soja\` — Vender hoy o guardar, con los números a la vista
+▸ \`/mbot granos\` — *Cómo se usa todo esto, explicado*
 
 *💡 Información y Ansiedad:*
 ▸ \`/mbot time\` — ⏳ Cuenta regresiva para activación de librería custom
@@ -138,8 +139,11 @@ En este equipo estoy solo para la pizarra de cotizaciones:
 ▸ \`/mbot alerta soja 600000\` — Avisar cuando la pizarra toque ese precio
 ▸ \`/mbot precio soja\` — Dónde cae el precio de hoy contra su historia
 ▸ \`/mbot carry soja\` — Vender hoy o guardar, con los números a la vista
+▸ \`/mbot granos\` — *Cómo se usa todo esto, explicado*
 
 _Todos los días la mando sola, apenas se publica el tablero._
+
+_📖 Cómo se usa todo esto, explicado:_ \`/mbot granos\`
 
 _💡 ¿Quieren además las frases diarias, los cumpleaños y las ideas? Un admin las prende con_ \`/mbot frases on\`_._
 `.trim();
@@ -482,7 +486,7 @@ async function handlePrivateCommand(message) {
 
 // Comandos que una persona cualquiera puede usar en el privado del bot. El
 // resto se sigue ignorando en silencio: el privado no es una consola.
-const PRIVADO_PREFIJOS = ["/mbot help", "/mbot mercado", "/mbot frases", "/mbot alerta", "/mbot alertas", "/mbot precio", "/mbot carry"];
+const PRIVADO_PREFIJOS = ["/mbot help", "/mbot mercado", "/mbot frases", "/mbot alerta", "/mbot alertas", "/mbot precio", "/mbot carry", "/mbot granos"];
 
 function empiezaConAlguno(lowerBody, prefijos) {
   return prefijos.some((c) => lowerBody === c || lowerBody.startsWith(c + " "));
@@ -532,6 +536,61 @@ async function responderCotizacion(message) {
   }
 }
 
+// Guía de las funciones de granos, en castellano y con ejemplos. Existe
+// porque las descripciones de una línea del menú no alcanzan: "carry" es
+// jerga, y quien no conoce la palabra nunca va a tipear el comando para
+// llegar a la explicación que vive adentro. Acá se puede leer antes.
+const GUIA_GRANOS = `
+🚜 *MotiBot y el mercado de granos* 🌾
+
+Cuatro cosas, de la más simple a la más pesada.
+
+*1️⃣ La pizarra del día*
+\`/mbot mercado\`
+Los precios de hoy de trigo, soja, maíz, sorgo y girasol, con cuánto
+cambiaron respecto de ayer y el dólar. Un admin puede hacer que llegue sola
+todos los días con \`/mbot mercado on\`.
+
+*2️⃣ Que te avisen cuando llegue a un precio*
+\`/mbot alerta soja 600000\`
+Vos ponés el número; el día que la pizarra lo toque, te aviso acá. El
+criterio es tuyo: yo no sugiero precios, solo miro el tablero todos los
+días, que es lo que vos no podés hacer.
+Te aviso *una sola vez* y la borro, para no repetirlo cada día.
+Ver las tuyas: \`/mbot alertas\` · Borrar: \`/mbot alerta borrar 1\`
+
+*3️⃣ ¿El precio de hoy es alto o bajo?*
+\`/mbot precio soja\`
+Te muestro dónde cae el precio de hoy comparado con su propia historia: el
+promedio de las últimas 30 y 90 ruedas, el mínimo y el máximo del año, y
+cuántas de esas ruedas estuvieron por debajo del de hoy.
+Va en dólares y en pesos. *Mirá el de dólares*: el de pesos sube también
+por inflación y devaluación, así que un \"+8%\" en pesos puede no ser mercado.
+No es un pronóstico. No digo si va a subir ni si conviene vender.
+
+*4️⃣ ¿Vendo ahora o guardo?*
+\`/mbot carry soja\`
+El mercado a término paga un precio distinto por entregar más adelante. Si
+esa diferencia le gana a lo que te cuesta tener el grano guardado, el
+mercado te está pagando por esperar. Si no, te está pagando por vender ya.
+
+Es una resta, no una predicción, y necesita *tus dos números*:
+▸ *Almacenaje* — lo que te cuesta tener una tonelada guardada un mes, en
+dólares. La tarifa del acopio, o la silobolsa prorrateada.
+▸ *Tasa* — el costo anual del dinero que no cobrás mientras no vendés.
+
+Se cargan una vez: \`/mbot carry costos 3 8\`
+_(US$ 3 por tonelada por mes, 8% anual)_
+
+No pongo valores por defecto a propósito: el que tiene silo propio y el que
+alquila tienen respuestas opuestas, y las dos están bien.
+
+━━━━━━━━━━━━━━━━━━━━
+_Todo esto es información de referencia y nunca una recomendación de venta._
+_Fuentes: pizarra ACAbase y Matba Rofex, con la fecha en cada mensaje._
+_Sirve para decidir mejor, no para decidir por vos._
+`.trim();
+
 // Menú del privado: corto, solo lo que ahí se puede hacer.
 const HELP_PRIVADO = `
 🤖 *MotiBot por privado*
@@ -549,6 +608,7 @@ Acá podés tener lo tuyo, sin molestar a ningún grupo:
 ▸ \`/mbot alerta borrar <n>\` — Borrar una
 ▸ \`/mbot precio soja\` — Dónde cae el precio de hoy contra su historia
 ▸ \`/mbot carry soja\` — Vender hoy o guardar, con tus costos
+▸ \`/mbot granos\` — *Cómo se usa todo esto, explicado*
 
 *✨ Frases:*
 ▸ \`/mbot phrase\` — Una frase ahora (una cada 12 h)
@@ -611,7 +671,7 @@ async function handleCommand(message, client) {
     // funcionar igual: la pizarra, el menú, el alta/baja y el botón de pánico.
     const SOLO_MERCADO_OK = [
       "/mbot mercado", "/mbot frases", "/mbot alerta", "/mbot alertas",
-      "/mbot precio", "/mbot carry",
+      "/mbot precio", "/mbot carry", "/mbot granos",
       "/mbot help", "/mbot add", "/mbot remove", "/mbot stop", "/mbot sync",
     ];
     if (!esChatPrivado(message) && !db.isPhrasesEnabled(groupId) &&
@@ -962,6 +1022,13 @@ async function handleCommand(message, client) {
 
     if (!subcommand) {
       return message.reply('❓ ¡Me dejaste por la mitad! Usá `/mbot help` para ver cómo pedirme las cosas.');
+    }
+
+    // --- guía de granos ---
+    // Sin gate de mercado prendido: es justamente lo que alguien lee para
+    // saber si le sirve prenderlo.
+    if (subcommand === "granos" || subcommand === "grano") {
+      return message.reply(GUIA_GRANOS);
     }
 
     // --- precio: dónde cae el de hoy contra su propia historia ---
@@ -1459,7 +1526,8 @@ async function handleCommand(message, client) {
 
         return message.reply(
           encender
-            ? `🚜 *Pizarra de granos activada.*\n\nTodos los días les paso la cotización, apenas se publica el tablero (no antes de las ${settings?.market_time || "09:00"} hs).\n\n_Verla ahora:_ \`/mbot mercado\``
+            ? `🚜 *Pizarra de granos activada.*\n\nTodos los días les paso la cotización, apenas se publica el tablero (no antes de las ${settings?.market_time || "09:00"} hs).\n\n_Verla ahora:_ \`/mbot mercado\`
+_Además puedo avisarles cuando un grano toque un precio, y ayudarlos con la cuenta de vender o guardar:_ \`/mbot granos\``
             : `🔕 Listo, no mando más la cotización diaria.\n\n_Para volver a prenderla:_ \`/mbot mercado on\``
         );
       }
