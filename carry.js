@@ -245,11 +245,20 @@ function mensajeCarry(codigo, { spotUsd, spotArs, posiciones, almacenajeMes, tas
         ? `✅ Guardar hasta ${p.nombre} deja *+US$ ${usd(c.neto)}/t*${enPesos(c.neto)}`
         : `➖ Guardar hasta ${p.nombre} deja *−US$ ${usd(Math.abs(c.neto))}/t*${enPesos(Math.abs(c.neto))}`;
 
-    // Con equilibrio negativo, ni regalando el almacenaje cierra: decir
-    // "se emparda con US$ 0,00" sería falso.
-    const referencia = equilibrio > 0
-      ? `_Se emparda con un almacenaje de US$ ${usd(equilibrio, 2)}/t/mes._`
-      : `_Ni con el almacenaje gratis cerraría: lo que paga el mercado no cubre el costo financiero._`;
+    // Por qué no cierra, que no siempre es lo mismo:
+    //   · si el mercado paga algo pero no alcanza, la culpa es del costo
+    //     financiero (y decirlo ayuda: con otra tasa podría cerrar);
+    //   · si la posición cotiza por debajo del disponible no hay nada que
+    //     capturar, y culpar al financiamiento sería mentir — pasaba con la
+    //     tasa en cero, donde el mensaje acusaba a un costo que era 0.
+    let referencia;
+    if (equilibrio > 0) {
+      referencia = `_Se emparda con un almacenaje de US$ ${usd(equilibrio, 2)}/t/mes._`;
+    } else if (c.mercado <= 0) {
+      referencia = `_Esa posición cotiza por debajo del disponible: no hay carry que capturar._`;
+    } else {
+      referencia = `_Ni con el almacenaje gratis cerraría: lo que paga el mercado no cubre el costo financiero._`;
+    }
 
     return (
       `📆 *${p.nombre}* — US$ ${usd(p.precio, 1)}/t  (${pct(c.mercadoPct)}, ${p.meses.toFixed(1).replace(".", ",")} meses)\n` +
