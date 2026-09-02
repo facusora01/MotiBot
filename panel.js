@@ -18,15 +18,17 @@ const AYUDA = `
 ▸ \`/admin borrar bajas\` — borrar todos los que estén dados de baja
 ▸ \`/admin decir <n> <texto>\` — mandar un mensaje al grupo
 
-*🌾 Mercado de granos*
-▸ \`/admin mercado\` — ver dónde está activo
-▸ \`/admin mercado ver\` — previsualizar la cotización de hoy acá
-▸ \`/admin mercado on <n|todos>\` — activarlo en un grupo
-▸ \`/admin mercado off <n|todos>\` — desactivarlo
+*🌾 Mercado de granos* _(la pizarra diaria)_
+▸ \`/admin mercado on <n>\` — *prenderlo en el grupo n*
+▸ \`/admin mercado off <n>\` — apagarlo ahí
+▸ \`/admin mercado on todos\` — prenderlo en todos los grupos activos
+▸ \`/admin mercado\` — ver en qué grupos está prendido
+▸ \`/admin mercado ver\` — previsualizar la cotización acá, sin mandarla
+▸ \`/admin mercado ya <n>\` — mandarla al grupo n ahora mismo
 ▸ \`/admin mercado hora <n> <HH:MM>\` — a partir de qué hora esperar la pizarra
-▸ \`/admin mercado ya <n>\` — mandarlo al grupo ahora mismo
 
-_Ejemplo:_ \`/admin mercado on 2\`
+_El \`<n>\` es el número que le toca al grupo en \`/admin grupos\`._
+_Ejemplo: \`/admin grupos\` y después \`/admin mercado on 2\`._
 `.trim();
 
 const HORA_REGEX = /^([01]?[0-9]|2[0-3]):([0-5][0-9])$/;
