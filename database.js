@@ -191,6 +191,24 @@ function getAllGroups() {
   return db.prepare(`SELECT * FROM groups ORDER BY id ASC`).all();
 }
 
+// Borrado definitivo: el grupo y TODO lo que colgaba de él (frases, cumples,
+// ideas con sus votos, listados y settings). No hay foreign keys en cascada
+// acá, así que cada tabla se limpia a mano; en una transacción para no dejar
+// huérfanos si algo falla a mitad de camino. El llamador decide a quién se le
+// permite (el panel solo lo ofrece sobre grupos ya dados de baja).
+function deleteGroupCompleto(groupId) {
+  const borrar = db.transaction(() => {
+    db.prepare(`DELETE FROM idea_votes WHERE group_id = ?`).run(groupId);
+    db.prepare(`DELETE FROM idea_polls WHERE group_id = ?`).run(groupId);
+    db.prepare(`DELETE FROM ideas WHERE group_id = ?`).run(groupId);
+    db.prepare(`DELETE FROM birthdays WHERE group_id = ?`).run(groupId);
+    db.prepare(`DELETE FROM custom_phrases WHERE group_id = ?`).run(groupId);
+    db.prepare(`DELETE FROM group_settings WHERE group_id = ?`).run(groupId);
+    return db.prepare(`DELETE FROM groups WHERE group_id = ?`).run(groupId).changes > 0;
+  });
+  return borrar();
+}
+
 // Reactiva un grupo ya conocido sin tocar su nombre ni su token.
 function reactivateGroup(groupId) {
   const info = db.prepare(`UPDATE groups SET active = 1 WHERE group_id = ?`).run(groupId);
@@ -536,6 +554,7 @@ module.exports = {
   addGroup,
   getAllGroups,
   reactivateGroup,
+  deleteGroupCompleto,
   setMarketEnabled,
   setMarketTime,
   isMarketEnabled,
