@@ -21,11 +21,11 @@ const AYUDA = `
 ▸ \`/admin decir <n> <texto>\` — mandar un mensaje al grupo
 
 *🚜 Modo del grupo*
-▸ \`/admin frases off <n>\` — solo mercado: apaga frases, cumples e ideas
-▸ \`/admin frases on <n>\` — volver al MotiBot completo
-▸ \`/admin frases\` — ver qué grupos están en solo mercado
+▸ \`/admin phrase off <n>\` — solo mercado: apaga frases, cumples e ideas
+▸ \`/admin phrase on <n>\` — volver al MotiBot completo
+▸ \`/admin phrase\` — ver qué grupos están en solo mercado
 
-_Los admins de cada grupo también lo manejan con_ \`/mbot frases on|off\`_._
+_Los admins de cada grupo también lo manejan con_ \`/mbot phrase on|off\`_._
 
 *🌾 Mercado de granos* _(la pizarra diaria)_
 ▸ \`/admin mercado on <n>\` — *prenderlo en el grupo n*
@@ -275,8 +275,8 @@ async function comandoFrases(message, partes) {
 
     return message.reply(
       `🚜 *Grupos en modo solo mercado*\n\n${detalle}\n\n` +
-      `Apagar las frases en un grupo: \`/admin frases off <n>\`\n` +
-      `Volver a prenderlas: \`/admin frases on <n>\``
+      `Apagar las frases en un grupo: \`/admin phrase off <n>\`\n` +
+      `Volver a prenderlas: \`/admin phrase on <n>\``
     );
   }
 
@@ -303,7 +303,7 @@ async function comandoFrases(message, partes) {
   return message.reply(
     `🚜 *${grupo.group_name}* pasa a *modo solo mercado*.\n\n` +
     `Se apagan la frase diaria, los cumpleaños, las ideas y todos esos comandos: si alguien los usa ahí, ni contesto.\n\n` +
-    `${aviso}\n\n_Para revertirlo:_ \`/admin frases on ${n}\``
+    `${aviso}\n\n_Para revertirlo:_ \`/admin phrase on ${n}\``
   );
 }
 
@@ -460,7 +460,7 @@ async function handleAdminPanel(message, client) {
     return comandoDecir(message, client, partes[2], m ? m[2] : "");
   }
 
-  if (sub === "frases" || sub === "frase") return comandoFrases(message, partes.slice(2));
+  if (sub === "phrase" || sub === "frases" || sub === "frase") return comandoFrases(message, partes.slice(2));
   if (sub === "historia") return comandoHistoria(message, partes.slice(2));
   if (sub === "mercado") return comandoMercado(message, client, partes.slice(2));
 

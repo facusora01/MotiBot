@@ -692,7 +692,7 @@ async function processMessage(message) {
     // handleCommand vuelve a filtrar con la lista fina; acá solo evitamos
     // resolver el contacto (que puede pegarle a la página) para los mensajes
     // que seguro no son para nosotros.
-    const PRIVADOS_OK = ["/mbot phrase", "/mbot stop", "/mbot help", "/mbot mercado", "/mbot frases", "/mbot alerta", "/mbot alertas"];
+    const PRIVADOS_OK = ["/mbot phrase", "/mbot stop", "/mbot help", "/mbot mercado", "/mbot phrase", "/mbot frases", "/mbot alerta", "/mbot alertas", "/mbot precio", "/mbot carry", "/mbot granos"];
     const okEnPrivado = PRIVADOS_OK.some((c) => lowerBody === c || lowerBody.startsWith(c + " "));
     if (!esGrupo && !okEnPrivado && !(await esSuperAdmin(message))) return;
 

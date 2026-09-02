@@ -81,7 +81,7 @@ Acá tenés todo lo que puedo hacer por vos y tu equipo:
 ▸ \`/mbot freq <1-6>\` — Ajustar cuántas veces paso por día
 ▸ \`/mbot use custom\` — Iniciar transición a frases del equipo
 ▸ \`/mbot use default\` — Volver a las frases clásicas
-▸ \`/mbot frases on|off\` — Prender o apagar las frases, cumples e ideas
+▸ \`/mbot phrase on|off\` — Prender o apagar las frases, cumples e ideas
 ▸ \`/mbot mercado on|off\` — Prender o apagar la pizarra de granos diaria
 
 *📚 Gestión de Frases:*
@@ -145,7 +145,7 @@ _Todos los días la mando sola, apenas se publica el tablero._
 
 _📖 Cómo se usa todo esto, explicado:_ \`/mbot granos\`
 
-_💡 ¿Quieren además las frases diarias, los cumpleaños y las ideas? Un admin las prende con_ \`/mbot frases on\`_._
+_💡 ¿Quieren además las frases diarias, los cumpleaños y las ideas? Un admin las prende con_ \`/mbot phrase on\`_._
 `.trim();
 
 // Antes estos comandos cortaban en silencio si el chat no estaba registrado, y
@@ -486,7 +486,7 @@ async function handlePrivateCommand(message) {
 
 // Comandos que una persona cualquiera puede usar en el privado del bot. El
 // resto se sigue ignorando en silencio: el privado no es una consola.
-const PRIVADO_PREFIJOS = ["/mbot help", "/mbot mercado", "/mbot frases", "/mbot alerta", "/mbot alertas", "/mbot precio", "/mbot carry", "/mbot granos"];
+const PRIVADO_PREFIJOS = ["/mbot help", "/mbot mercado", "/mbot phrase", "/mbot frases", "/mbot alerta", "/mbot alertas", "/mbot precio", "/mbot carry", "/mbot granos"];
 
 function empiezaConAlguno(lowerBody, prefijos) {
   return prefijos.some((c) => lowerBody === c || lowerBody.startsWith(c + " "));
@@ -668,8 +668,8 @@ Acá podés tener lo tuyo, sin molestar a ningún grupo:
 
 *✨ Frases:*
 ▸ \`/mbot phrase\` — Una frase ahora (una cada 12 h)
-▸ \`/mbot frases on\` — Recibir la frase del día todos los días acá
-▸ \`/mbot frases off\` — Dejar de recibirla
+▸ \`/mbot phrase on\` — Recibir la frase del día todos los días acá
+▸ \`/mbot phrase off\` — Dejar de recibirla
 
 _El aviso de una alerta llega solo acá: nadie más lo ve._
 `.trim();
@@ -726,8 +726,11 @@ async function handleCommand(message, client) {
     // que lo llamen. Quedan afuera del silencio los comandos que tienen que
     // funcionar igual: la pizarra, el menú, el alta/baja y el botón de pánico.
     const SOLO_MERCADO_OK = [
-      "/mbot mercado", "/mbot frases", "/mbot alerta", "/mbot alertas",
+      "/mbot mercado", "/mbot alerta", "/mbot alertas",
       "/mbot precio", "/mbot carry", "/mbot granos",
+      // Solo el interruptor, no el dispensador: en un grupo sin frases,
+      // "/mbot phrase" a secas tiene que seguir sin contestar.
+      "/mbot phrase on", "/mbot phrase off", "/mbot frases", "/mbot frases on", "/mbot frases off",
       "/mbot help", "/mbot add", "/mbot remove", "/mbot stop", "/mbot sync",
     ];
     if (!esChatPrivado(message) && !db.isPhrasesEnabled(groupId) &&
@@ -1362,10 +1365,10 @@ async function handleCommand(message, client) {
     const UNKNOWN_MSG = `❓ ¡Epa! Ese comando no lo tengo en mi memoria. Usá \`/mbot help\` para ver mi manual de instrucciones.`;
 
     // parts = ["/mbot", subcommand, arg?] → length 2 = sin arg extra, 3 = con arg.
-    const strictNoArg = ["phrase", "status", "help", "add", "remove", "list", "stop", "time"];
+    const strictNoArg = ["status", "help", "add", "remove", "list", "stop", "time"];
     const needsOneArg = ["lang", "use"];
     // mercado y frases: sin argumento consultan, con on/off cambian el estado.
-    const optionalOneArg = ["clock", "freq", "mercado", "frases"];
+    const optionalOneArg = ["clock", "freq", "mercado", "phrase", "frases"];
 
     if (strictNoArg.includes(subcommand) && parts.length !== 2) return message.reply(UNKNOWN_MSG);
     if (needsOneArg.includes(subcommand) && parts.length !== 3) return message.reply(UNKNOWN_MSG);
@@ -1422,6 +1425,8 @@ async function handleCommand(message, client) {
       return message.reply(
         `📊 *¡Acá tenés el reporte de MotiBot!* 🚀\n\n` +
         `📍 Equipo: ${group.group_name}\n` +
+        `✨ Frases: ${db.isPhrasesEnabled(groupId) ? "prendidas" : "apagadas (modo solo mercado)"}\n` +
+        `🚜 Mercado de granos: ${db.isMarketEnabled(groupId) ? "prendido" : "apagado"}\n` +
         `🌍 Idioma: ${settings?.language === "en" ? "Inglés 🇬🇧" : "Español 🇦🇷"}\n` +
         `📚 Librería Custom: ${customStatus}\n` +
         `🕗 Reloj: Funcionando perfecto`
@@ -1453,8 +1458,96 @@ async function handleCommand(message, client) {
       return message.reply("ℹ️ Actualmente estamos en modo clásico. Usá `/mbot use custom` para empezar la transición.");
     }
 
-    // --- phrase ---
+    // --- phrase on|off: el interruptor de las frases ---
+    // Va ANTES del dispensador de frases (/mbot phrase a secas), que es el
+    // mismo subcomando sin argumento. Antes esto se llamaba "/mbot frases", que
+    // era el mismo concepto con otro nombre y en otro idioma; se sigue
+    // aceptando como alias, pero ya no se documenta.
+    const esInterruptorFrases =
+      (subcommand === "phrase" || subcommand === "frases") && (arg === "on" || arg === "off");
+    const esEstadoFrases = subcommand === "frases" && !arg;
+
+    if (esInterruptorFrases || esEstadoFrases) {
+      // En un privado, prenderlas registra el chat; apagarlas o consultarlas no
+      // tiene sentido si nunca hubo nada.
+      if (esChatPrivado(message) && arg === "on") {
+        await asegurarChatPrivado(message, client, groupId);
+      }
+
+      const group = db.getGroup(groupId);
+      if (!group || !group.active) {
+        return message.reply(
+          esChatPrivado(message)
+            ? "✨ Todavía no te estoy mandando nada por acá.\n\n_Para recibir la frase del día:_ `/mbot phrase on`"
+            : NO_REGISTRADO
+        );
+      }
+
+      const prendidas = db.isPhrasesEnabled(groupId);
+
+      if (!arg) {
+        return message.reply(
+          prendidas
+            ? "✨ Las frases están *prendidas*.\n\n_Para apagarlas:_ `/mbot phrase off`"
+            : "🔕 Las frases están *apagadas*.\n\n_Para prenderlas:_ `/mbot phrase on`"
+        );
+      }
+
+      if (arg !== "on" && arg !== "off") {
+        return message.reply("❌ Usá `/mbot phrase on` o `/mbot phrase off`.");
+      }
+
+      if (!(await puedeConfigurar(message, client))) {
+        return message.reply("🔒 ¡Alto ahí! Solo los administradores del equipo pueden cambiar esto.");
+      }
+
+      const encender = arg === "on";
+      if (encender === prendidas) {
+        return message.reply(encender ? "ℹ️ Las frases ya estaban prendidas." : "ℹ️ Las frases ya estaban apagadas.");
+      }
+
+      db.setPhrasesEnabled(groupId, encender);
+
+      // En un privado no hay cumpleaños ni ideas —son cosas de grupo—, así que
+      // prometerlas ahí sería mentir. Tampoco existe el "modo solo mercado":
+      // es simplemente que la persona no quiere la frase diaria.
+      const enPrivado = esChatPrivado(message);
+      const settings = db.getGroupSettings(groupId);
+
+      if (encender) {
+        return message.reply(
+          enPrivado
+            ? `✨ Listo, te mando la frase del día todos los días a las ${settings?.send_time || "08:00"} hs.\n\n_Para dejar de recibirla:_ \`/mbot phrase off\``
+            : `✨ *¡Volví completo!*\n\nPaso todos los días a las ${settings?.send_time || "08:00"} hs con una frase, saludo los cumpleaños y escucho sus ideas.\n\nMenú: \`/mbot help\``
+        );
+      }
+
+      const conMercado = db.isMarketEnabled(groupId);
+
+      if (enPrivado) {
+        return message.reply(
+          `🔕 Listo, no te mando más la frase del día.\n\n` +
+          `_Seguís pudiendo pedir una cuando quieras con_ \`/mbot phrase\`_._\n` +
+          `_Para volver a recibirla todos los días:_ \`/mbot phrase on\``
+        );
+      }
+
+      // En un grupo, si tampoco hay mercado se queda sin nada: hay que decirlo.
+      return message.reply(
+        `🚜 *Modo solo mercado activado.*\n\n` +
+        `Dejo de mandar la frase diaria, los cumpleaños y las ideas, y no respondo esos comandos.\n\n` +
+        (conMercado
+          ? `Sigo con la pizarra de granos de todos los días.`
+          : `⚠️ Ojo: acá tampoco está prendido el mercado, así que no voy a hacer nada. Prendelo con \`/mbot mercado on\`.`) +
+        `\n\n_Para volver atrás:_ \`/mbot phrase on\``
+      );
+    }
+
+    // --- phrase: una frase ahora ---
     if (subcommand === "phrase") {
+      // on|off ya se resolvió arriba; cualquier otra cosa es un error de tipeo.
+      if (arg) return message.reply(UNKNOWN_MSG);
+
       try {
         const group = db.getGroup(groupId);
         if (!group || !group.active) {
@@ -1530,66 +1623,6 @@ async function handleCommand(message, client) {
     // --- frases on|off ---
     // El admin del grupo decide si quiere el MotiBot completo o solo la
     // pizarra. Sin argumento, dice cómo está.
-    if (subcommand === "frases") {
-      // En un privado, prenderlas registra el chat; apagarlas o consultarlas no
-      // tiene sentido si nunca hubo nada.
-      if (esChatPrivado(message) && arg === "on") {
-        await asegurarChatPrivado(message, client, groupId);
-      }
-
-      const group = db.getGroup(groupId);
-      if (!group || !group.active) {
-        return message.reply(
-          esChatPrivado(message)
-            ? "✨ Todavía no te estoy mandando nada por acá.\n\n_Para recibir la frase del día:_ `/mbot frases on`"
-            : NO_REGISTRADO
-        );
-      }
-
-      const prendidas = db.isPhrasesEnabled(groupId);
-
-      if (!arg) {
-        return message.reply(
-          prendidas
-            ? "✨ Las frases están *prendidas*: paso todos los días con una frase, saludo los cumpleaños y atiendo las ideas.\n\n_Para dejar solo el mercado de granos:_ `/mbot frases off`"
-            : "🚜 Estoy en *modo solo mercado*: no mando frases ni saludo cumpleaños.\n\n_Para volver al MotiBot completo:_ `/mbot frases on`"
-        );
-      }
-
-      if (arg !== "on" && arg !== "off") {
-        return message.reply("❌ Usá `/mbot frases on` o `/mbot frases off`.");
-      }
-
-      if (!(await puedeConfigurar(message, client))) {
-        return message.reply("🔒 ¡Alto ahí! Solo los administradores del equipo pueden cambiar esto.");
-      }
-
-      const encender = arg === "on";
-      if (encender === prendidas) {
-        return message.reply(encender ? "ℹ️ Las frases ya estaban prendidas." : "ℹ️ Ya estaba en modo solo mercado.");
-      }
-
-      db.setPhrasesEnabled(groupId, encender);
-
-      if (encender) {
-        const settings = db.getGroupSettings(groupId);
-        return message.reply(
-          `✨ *¡Volví completo!*\n\nPaso todos los días a las ${settings?.send_time || "08:00"} hs con una frase, saludo los cumpleaños y escucho sus ideas.\n\nMenú: \`/mbot help\``
-        );
-      }
-
-      // Si tampoco hay mercado, el grupo se queda sin nada: hay que decirlo.
-      const conMercado = db.isMarketEnabled(groupId);
-      return message.reply(
-        `🚜 *Modo solo mercado activado.*\n\n` +
-        `Dejo de mandar la frase diaria, los cumpleaños y las ideas, y no respondo esos comandos.\n\n` +
-        (conMercado
-          ? `Sigo con la pizarra de granos de todos los días.`
-          : `⚠️ Ojo: acá tampoco está prendido el mercado, así que no voy a hacer nada. Prendelo con \`/mbot mercado on\`.`) +
-        `\n\n_Para volver atrás:_ \`/mbot frases on\``
-      );
-    }
-
     // --- mercado de granos ---
     // Sin argumento devuelve la cotización; con on/off un admin del grupo
     // prende o apaga la pizarra diaria. No hace falta que el super admin
