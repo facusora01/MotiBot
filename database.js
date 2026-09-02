@@ -30,6 +30,7 @@ db.exec(`
     market_time          TEXT DEFAULT '09:00',
     market_last_sent     TEXT,
     carry_storage        REAL,
+    carry_storage_unit   TEXT DEFAULT 'usd',
     carry_rate           REAL,
     FOREIGN KEY (group_id) REFERENCES groups(group_id)
   );
@@ -169,6 +170,7 @@ try {
 try {
   db.exec(`ALTER TABLE group_settings ADD COLUMN carry_storage REAL`);
   db.exec(`ALTER TABLE group_settings ADD COLUMN carry_rate REAL`);
+  db.exec(`ALTER TABLE group_settings ADD COLUMN carry_storage_unit TEXT DEFAULT 'usd'`);
   console.log("🔧 Migración: Columnas de supuestos del carry listas.");
 } catch (e) {}
 
@@ -598,17 +600,25 @@ function aplicarVotosDePoll(groupId, pollMsgId, votos) {
 // --- SUPUESTOS DEL CARRY -----------------------------------------------------
 function getCarryCostos(groupId) {
   const row = db.prepare(`
-    SELECT carry_storage, carry_rate FROM group_settings WHERE group_id = ?
+    SELECT carry_storage, carry_storage_unit, carry_rate FROM group_settings WHERE group_id = ?
   `).get(groupId);
   if (!row || row.carry_storage === null || row.carry_rate === null) return null;
-  return { almacenajeMes: row.carry_storage, tasaAnual: row.carry_rate };
+  return {
+    almacenaje: row.carry_storage,
+    // 'pct' = porcentaje mensual del valor del grano, que es como lo cobran los
+    // acopios; 'usd' = dolares por tonelada por mes, fijo.
+    unidad: row.carry_storage_unit || "usd",
+    tasaAnual: row.carry_rate,
+  };
 }
 
-function setCarryCostos(groupId, almacenajeMes, tasaAnual) {
+function setCarryCostos(groupId, almacenaje, unidad, tasaAnual) {
   db.prepare(`INSERT OR IGNORE INTO group_settings (group_id) VALUES (?)`).run(groupId);
   db.prepare(`
-    UPDATE group_settings SET carry_storage = ?, carry_rate = ? WHERE group_id = ?
-  `).run(almacenajeMes, tasaAnual, groupId);
+    UPDATE group_settings
+    SET carry_storage = ?, carry_storage_unit = ?, carry_rate = ?
+    WHERE group_id = ?
+  `).run(almacenaje, unidad, tasaAnual, groupId);
 }
 
 // --- ALERTAS DE PRECIO -------------------------------------------------------
