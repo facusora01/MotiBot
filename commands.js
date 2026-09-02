@@ -492,6 +492,26 @@ function empiezaConAlguno(lowerBody, prefijos) {
   return prefijos.some((c) => lowerBody === c || lowerBody.startsWith(c + " "));
 }
 
+// Saca los números de un texto, anotando cuáles venían marcados con %. Acepta
+// el símbolo pegado o separado y de los dos lados: en español la convención es
+// posponerlo ("0,35 %"), pero no vale la pena rechazar a quien lo antepone.
+// Acepta coma o punto decimal, que acá se usan las dos.
+//   "0,35% 8"  → [{0.35, pct}, {8}]
+//   "%0,35 8"  → [{0.35, pct}, {8}]
+//   "0.35 % 8" → [{0.35, pct}, {8}]
+//   "3 8"      → [{3}, {8}]
+function extraerValores(texto) {
+  const limpio = String(texto || "").replace(/,/g, ".");
+  const re = /(%\s*)?(\d+(?:\.\d+)?)(\s*%)?/g;
+
+  const valores = [];
+  let m;
+  while ((m = re.exec(limpio)) !== null) {
+    valores.push({ valor: Number(m[2]), esPct: Boolean(m[1] || m[3]) });
+  }
+  return valores;
+}
+
 // En un privado la persona es dueña de su chat: no hay admins que consultar.
 async function puedeConfigurar(message, client) {
   if (esChatPrivado(message)) return true;
@@ -555,7 +575,8 @@ _→ almacenaje 0,35% mensual · tasa 8% anual_
 
 ▸ *Si lo dejás en el acopio:* está en tu liquidación, en el renglón de
 gastos de almacenaje. Suele venir como un *porcentaje mensual* del valor.
-Cargalo tal cual, con el signo %.
+Cargalo tal cual, con el signo %: da igual si lo ponés antes o después
+del número, y si usás coma o punto.
 
 ▸ *Si usás silobolsa propia:* sumá bolsa + embolsado + extracción y dividí
 por las toneladas que entran y por los meses que la vas a tener.
@@ -1111,19 +1132,22 @@ async function handleCommand(message, client) {
 
       // /mbot carry costos <almacenaje> <tasa>
       if (subcommand === "carry" && (arg === "costos" || arg === "costo")) {
-        // Acepta "0,35%" (porcentaje mensual del valor, como cobra el acopio)
-        // y "0,33" (dólares por tonelada por mes, silobolsa propia).
-        const crudo = String(parts[3] || "").replace(",", ".").trim();
-        const crudoTasa = String(parts[4] || "").replace(",", ".").replace("%", "").trim();
-        const esPct = crudo.endsWith("%");
-        const almacenaje = Number(esPct ? crudo.slice(0, -1) : crudo);
-        const tasa = Number(crudoTasa);
+        // Se parsea todo lo que sigue a "costos" de una, en vez de por token:
+        // el % puede ir pegado, antes, después o separado por un espacio, y
+        // partir por espacios rompía la forma "0,35 % 8". El % lo pone la
+        // persona como le salga; el orden de los valores es lo único que
+        // importa (primero almacenaje, después tasa).
+        const valores = extraerValores(parts.slice(3).join(" "));
+        const esPct = valores[0]?.esPct || false;
+        const almacenaje = valores[0]?.valor;
+        const tasa = valores[1]?.valor;
 
-        // Number("") es 0, no NaN: sin este chequeo un `/mbot carry costos`
-        // pelado guardaba "almacenaje gratis y dinero gratis" en silencio, y
-        // con esos supuestos cualquier carry da positivo. Un cero explícito sí
-        // es válido (silo propio ya pagado), un campo vacío no.
-        const faltanDatos = !crudo || !crudoTasa;
+        // Sin dos números no hay nada que guardar. El chequeo es sobre la
+        // CANTIDAD de valores y no sobre Number(): Number("") es 0, no NaN, y
+        // un `/mbot carry costos` pelado llegaba a guardar "almacenaje gratis
+        // y dinero gratis" en silencio, supuestos con los que cualquier carry
+        // da positivo. Un cero explícito sí vale (silo propio ya pagado).
+        const faltanDatos = valores.length < 2;
 
         // Un almacenaje en dólares por encima de 50 es un error de tipeo; en
         // porcentaje, cualquier cosa arriba de 5% mensual también.
