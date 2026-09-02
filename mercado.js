@@ -115,7 +115,7 @@ function formatearMercado({ fecha, granos, dolar }) {
   });
 
   let texto =
-    `🌾 *MERCADO DE GRANOS* 🌾\n` +
+    `🚜 *MERCADO DE GRANOS* 🌾\n` +
     `📅 Pizarra del ${fecha}\n\n` +
     `${lineas.join("\n\n")}\n`;
 
