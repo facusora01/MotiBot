@@ -4,6 +4,7 @@ const { handleAdminPanel, AYUDA: AYUDA_PANEL } = require("./panel");
 const alertas = require("./alertas");
 const matba = require("./matba");
 const carry = require("./carry");
+const historia = require("./historia");
 
 const { exec } = require("child_process");
 
@@ -1016,7 +1017,7 @@ async function handleCommand(message, client) {
 
       if (subcommand === "precio") {
         try {
-          const serie = await matba.getHistoria(grano, desdeDosAnios(hoyISO), hoyISO);
+          const serie = await historia.serieParaComparar(grano, hoyISO, carry.MINIMO_UTIL);
           if (!serie.length) {
             return message.reply(`⚠️ No conseguí historia de ${alertas.nombreGrano(grano)} ahora mismo. Probá en un rato.`);
           }

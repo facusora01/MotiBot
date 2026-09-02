@@ -12,6 +12,7 @@ const { respaldarSesion, restaurarSesionSiHaceFalta, borrarSesionYBackup } = req
 const { getTunnelUrl } = require("./tunnel-url");
 const { getMercado, fechaPizarraISO } = require("./mercado");
 const alertas = require("./alertas");
+const historia = require("./historia");
 
 const HORA_ENVIO = process.env.HORA_ENVIO || "08:00";
 
@@ -290,6 +291,15 @@ async function procesarPizarraDelDia(client, ahoraHHMM) {
     console.error("❌ No pude guardar la pizarra del día:", error.message);
   }
 
+  // Y la serie de Matba Rofex, que es la que usan las comparaciones y el carry.
+  // Va acá y no en su propio horario porque es el momento en que sabemos que la
+  // rueda del día ya cerró.
+  try {
+    await historia.actualizar(hoy.iso);
+  } catch (error) {
+    console.error("❌ No pude actualizar la serie de Matba Rofex:", error.message);
+  }
+
   const porChat = alertas.evaluar(mercado.granos);
   if (!porChat.size) return;
 
@@ -482,6 +492,12 @@ client.on("ready", async () => {
 
   // Con la sesión viva ya sabemos con qué ids nos arrobaría la gente.
   await registrarIdsDelBot();
+
+  // Carga inicial de la serie de precios, si nunca se hizo. En segundo plano:
+  // son varias decenas de páginas de red y no tiene por qué demorar el arranque.
+  historia
+    .backfillSiHaceFalta(fechaArgentina().iso)
+    .catch((e) => console.error("❌ Falló la carga inicial de historia:", e.message));
 
   // Pre-cargamos el pool para que /mbot phrase responda al instante; idempotente.
   iniciarPool();

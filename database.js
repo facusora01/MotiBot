@@ -111,6 +111,20 @@ db.exec(`
     PRIMARY KEY (fecha, producto)
   );
 
+  -- Serie histórica de Matba Rofex, en las dos monedas. Va en tabla aparte de
+  -- market_history a propósito: son fuentes distintas con números distintos
+  -- (el 1/9/26 la pizarra de ACAbase daba soja 550.000 y MATBA 560.000), y
+  -- mezclarlas en una sola columna produciría una serie que no es ninguna de
+  -- las dos. Se hace backfill una vez y después se agrega una fila por rueda.
+  CREATE TABLE IF NOT EXISTS matba_history (
+    fecha       TEXT NOT NULL,
+    producto    TEXT NOT NULL,
+    usd         REAL,
+    ars         REAL,
+    guardado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (fecha, producto)
+  );
+
   -- Mapa emoji → idea del último listado de cada grupo: resuelve a qué idea
   -- corresponde una reacción.
   CREATE TABLE IF NOT EXISTS idea_polls (
@@ -649,6 +663,48 @@ function guardarPizarra(fechaISO, granos) {
   return guardar();
 }
 
+// Guarda o actualiza filas de la serie de MATBA. COALESCE: si una rueda ya
+// estaba con las dos monedas y viene una actualización con solo una, no le
+// borramos la otra.
+function guardarMatba(producto, filas) {
+  const guardar = db.transaction(() => {
+    const stmt = db.prepare(`
+      INSERT INTO matba_history (fecha, producto, usd, ars) VALUES (?, ?, ?, ?)
+      ON CONFLICT(fecha, producto) DO UPDATE SET
+        usd = COALESCE(excluded.usd, matba_history.usd),
+        ars = COALESCE(excluded.ars, matba_history.ars)
+    `);
+    for (const f of filas) {
+      if (!f?.fecha) continue;
+      stmt.run(f.fecha, producto, f.usd ?? null, f.ars ?? null);
+    }
+  });
+  return guardar();
+}
+
+// La serie guardada, en el mismo formato que devuelve matba.getHistoria().
+function getMatbaHistoria(producto, desdeISO) {
+  return db.prepare(`
+    SELECT fecha, usd, ars FROM matba_history
+    WHERE producto = ? AND fecha >= ?
+    ORDER BY fecha ASC
+  `).all(producto, desdeISO);
+}
+
+function contarMatba(producto) {
+  if (producto) {
+    return db.prepare(`SELECT COUNT(*) as count FROM matba_history WHERE producto = ?`).get(producto).count;
+  }
+  return db.prepare(`SELECT COUNT(*) as count FROM matba_history`).get().count;
+}
+
+function resumenMatba() {
+  return db.prepare(`
+    SELECT producto, COUNT(*) as ruedas, MIN(fecha) as desde, MAX(fecha) as hasta
+    FROM matba_history GROUP BY producto ORDER BY producto
+  `).all();
+}
+
 function contarDiasDeHistoria() {
   return db.prepare(`SELECT COUNT(DISTINCT fecha) as count FROM market_history`).get().count;
 }
@@ -716,6 +772,10 @@ module.exports = {
   deleteAlertas,
   MAX_ALERTAS_POR_CHAT,
   guardarPizarra,
+  guardarMatba,
+  getMatbaHistoria,
+  contarMatba,
+  resumenMatba,
   contarDiasDeHistoria,
   isPhrasesEnabled,
   setPhrasesEnabled,
