@@ -1172,9 +1172,14 @@ async function handleCommand(message, client) {
 
         if (!disponible.usd || !posiciones.length) {
           return message.reply(
-            `⚠️ No conseguí la rueda de hoy de ${alertas.nombreGrano(grano)} (puede que todavía no haya cerrado, o que sea un día sin operaciones). Probá más tarde.`
+            `⚠️ No conseguí precios de ${alertas.nombreGrano(grano)} en los últimos días. Probá más tarde.`
           );
         }
+
+        // La fecha del mensaje es la de la rueda que estamos mostrando, no la
+        // de hoy: a la mañana el cierre vigente es el de ayer, y decir "hoy"
+        // sería falso.
+        const fechaRueda = posiciones[0]?.rueda || disponible.rueda || hoyISO;
 
         // Solo las posiciones con interés abierto de verdad: las de dos
         // contratos tienen precio publicado pero no son un mercado.
@@ -1187,7 +1192,7 @@ async function handleCommand(message, client) {
               spotUsd: disponible.usd,
               spotArs: disponible.ars,
               posiciones: elegidas,
-              fecha: hoyISO,
+              fecha: fechaRueda,
             })
           );
         }
@@ -1215,7 +1220,7 @@ async function handleCommand(message, client) {
             almacenajeMes,
             textoAlmacenaje,
             tasaAnual: costos.tasaAnual,
-            fecha: hoyISO,
+            fecha: fechaRueda,
             dolar,
           })
         );

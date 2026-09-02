@@ -164,15 +164,33 @@ try {
   db.exec(`ALTER TABLE group_settings ADD COLUMN market_last_sent TEXT`);
 } catch (e) {}
 
-// Supuestos del carry: almacenaje en USD/t/mes y costo del dinero anual en
-// dolares. NULL = sin configurar, y en ese caso el carry no se muestra: una
-// cuenta con supuestos que el productor no eligio es peor que ninguna cuenta.
-try {
-  db.exec(`ALTER TABLE group_settings ADD COLUMN carry_storage REAL`);
-  db.exec(`ALTER TABLE group_settings ADD COLUMN carry_rate REAL`);
-  db.exec(`ALTER TABLE group_settings ADD COLUMN carry_storage_unit TEXT DEFAULT 'usd'`);
-  console.log("🔧 Migración: Columnas de supuestos del carry listas.");
-} catch (e) {}
+// Agrega una columna si no está. Cada ALTER va solo: agrupar varios en un
+// mismo try es una trampa, porque en una base que ya tiene la primera columna
+// el ALTER falla por "duplicate column name", el catch se lo come y las
+// columnas siguientes NUNCA se crean. Pasó de verdad: carry_storage_unit no
+// existía en producción y cualquier /mbot carry reventaba con "no such
+// column". Con el chequeo previo, además, el catch solo tapa errores reales.
+function agregarColumna(tabla, columna, definicion) {
+  const existe = db.prepare(`PRAGMA table_info(${tabla})`).all().some((c) => c.name === columna);
+  if (existe) return false;
+
+  try {
+    db.exec(`ALTER TABLE ${tabla} ADD COLUMN ${columna} ${definicion}`);
+    console.log(`🔧 Migración: columna '${columna}' agregada a ${tabla}.`);
+    return true;
+  } catch (e) {
+    console.error(`❌ No pude agregar ${tabla}.${columna}:`, e.message);
+    return false;
+  }
+}
+
+// Supuestos del carry: almacenaje (en USD/t/mes o en % mensual del valor, según
+// carry_storage_unit) y costo del dinero anual en dólares. NULL = sin
+// configurar, y ahí el carry muestra solo lo que paga el mercado: una cuenta
+// con supuestos que el productor no eligió es peor que ninguna cuenta.
+agregarColumna("group_settings", "carry_storage", "REAL");
+agregarColumna("group_settings", "carry_rate", "REAL");
+agregarColumna("group_settings", "carry_storage_unit", "TEXT DEFAULT 'usd'");
 
 try {
   db.exec(`ALTER TABLE groups ADD COLUMN web_token TEXT`);
