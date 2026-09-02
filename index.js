@@ -449,6 +449,10 @@ client.on("ready", async () => {
 
     const activeGroups = db.getActiveGroups();
     for (const group of activeGroups) {
+      // Modo solo mercado: ni frase diaria ni saludos de cumple. La pizarra va
+      // por su propio camino (enviarMercado), más abajo.
+      if (!db.isPhrasesEnabled(group.group_id)) continue;
+
       // settings puede ser undefined si el grupo no tiene fila en group_settings.
       const settings = db.getGroupSettings(group.group_id);
       const baseTime = settings?.send_time || "08:00";
