@@ -172,18 +172,45 @@ async function enviarCumpleanios(client, group) {
   }
 }
 
+function aMinutos(hhmm) {
+  const [h, m] = String(hhmm || "09:00").split(":").map(Number);
+  return (Number.isFinite(h) ? h : 9) * 60 + (Number.isFinite(m) ? m : 0);
+}
+
+// Cuánto seguimos esperando la pizarra después de la hora del grupo. Sin este
+// tope, un día sin rueda dejaría el sondeo dando vueltas hasta la medianoche.
+const VENTANA_MERCADO = 6 * 60; // minutos
+
+// Día del último "todavía no es la de hoy": el aviso se emite una sola vez.
+let avisoPizarraVieja = null;
+
 // Mercado de granos: opt-in por grupo (lo habilita el super admin desde su
-// privado). Sale una vez por día y solo si la pizarra del feed es la de HOY:
-// los fines de semana y feriados no hay rueda y el feed sigue devolviendo la
-// última, así que sin este chequeo el domingo repetiríamos la del viernes.
+// privado). market_time NO es la hora exacta del envío sino un "no antes de":
+// la pizarra se publica cerca de las 10:30 y algunos días más tarde, así que
+// sondeamos desde esa hora y mandamos en el primer tick que la encuentre.
+//
+// Dos condiciones para que salga, y las dos importan:
+//   · la fecha de la pizarra tiene que ser la de HOY — fin de semana y feriados
+//     no hay rueda y el feed sigue devolviendo la última, así que sin esto el
+//     domingo repetiríamos la del viernes;
+//   · market_last_sent tiene que no ser hoy — apenas sale, el grupo queda
+//     saldado hasta mañana aunque el cron siga corriendo cada minuto.
+//
+// El sondeo es barato: getMercado() cachea 10 minutos, así que entre la hora
+// del grupo y el envío se pega a la red 6 veces por hora como mucho, y una vez
+// enviado no se consulta más en todo el día.
 async function enviarMercado(client, ahoraHHMM) {
   const grupos = db.getMarketGroups();
   if (!grupos.length) return;
 
   const hoy = fechaArgentina();
-  const pendientes = grupos.filter(
-    (g) => (g.market_time || "09:00") === ahoraHHMM && g.market_last_sent !== hoy.iso
-  );
+  const ahora = aMinutos(ahoraHHMM);
+
+  const pendientes = grupos.filter((g) => {
+    if (g.market_last_sent === hoy.iso) return false; // ya lo recibió hoy
+    const desde = aMinutos(g.market_time);
+    return ahora >= desde && ahora < desde + VENTANA_MERCADO;
+  });
   if (!pendientes.length) return;
 
   let mercado;
@@ -195,7 +222,12 @@ async function enviarMercado(client, ahoraHHMM) {
   }
 
   if (fechaPizarraISO(mercado.fecha) !== hoy.iso) {
-    console.log(`🌾 Pizarra del ${mercado.fecha}: no es la de hoy (${hoy.iso}). No la mando.`);
+    // Una línea por día: durante la espera esto se evalúa cada minuto y el log
+    // quedaría ilegible.
+    if (avisoPizarraVieja !== hoy.iso) {
+      avisoPizarraVieja = hoy.iso;
+      console.log(`🌾 Pizarra del ${mercado.fecha}: todavía no es la de hoy (${hoy.iso}). Sigo esperando.`);
+    }
     return;
   }
 

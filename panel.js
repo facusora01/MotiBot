@@ -1,7 +1,7 @@
 // Panel del super admin: gestión de MotiBot desde su chat privado, sin SSH.
 // Todo se referencia por el NÚMERO de la lista de `/admin grupos` (los ids de
 // WhatsApp son impronunciables); ese orden es estable porque getAllGroups()
-// ordena por activo y luego por id de alta.
+// ordena solo por id de alta, así dar de baja un grupo no renumera al resto.
 const db = require("./database");
 const { getMercado } = require("./mercado");
 
@@ -23,7 +23,7 @@ const AYUDA = `
 ▸ \`/admin mercado ver\` — previsualizar la cotización de hoy acá
 ▸ \`/admin mercado on <n|todos>\` — activarlo en un grupo
 ▸ \`/admin mercado off <n|todos>\` — desactivarlo
-▸ \`/admin mercado hora <n> <HH:MM>\` — horario del envío diario
+▸ \`/admin mercado hora <n> <HH:MM>\` — a partir de qué hora esperar la pizarra
 ▸ \`/admin mercado ya <n>\` — mandarlo al grupo ahora mismo
 
 _Ejemplo:_ \`/admin mercado on 2\`
@@ -98,7 +98,7 @@ async function comandoInfo(message, arg) {
     `Frases: ${db.countCustomPhrases(grupo.group_id)}\n` +
     `Cumpleaños: ${db.countBirthdays(grupo.group_id)}\n` +
     `Ideas: ${db.countIdeas(grupo.group_id)}\n` +
-    `Mercado de granos: ${s?.market_enabled ? `🌾 activo a las ${fmtHora(s.market_time)}` : "apagado"}\n\n` +
+    `Mercado de granos: ${s?.market_enabled ? `🌾 activo, desde las ${fmtHora(s.market_time)}` : "apagado"}\n\n` +
     `\`\`\`${grupo.group_id}\`\`\``
   );
 }
@@ -248,7 +248,7 @@ async function comandoMercado(message, client, partes) {
       .filter((x) => x.s?.market_enabled);
 
     const detalle = conMercado.length
-      ? conMercado.map((x) => `*${x.i + 1}.* ${x.g.active ? "🟢" : "⚪"} ${x.g.group_name} — ${fmtHora(x.s.market_time)} hs`).join("\n")
+      ? conMercado.map((x) => `*${x.i + 1}.* ${x.g.active ? "🟢" : "⚪"} ${x.g.group_name} — desde las ${fmtHora(x.s.market_time)} hs`).join("\n")
       : "_Ningún grupo lo tiene activo._";
 
     return message.reply(
@@ -287,7 +287,7 @@ async function comandoMercado(message, client, partes) {
 
     return message.reply(
       encender
-        ? `🌾 Mercado de granos *activado* en *${grupo.group_name}*.\n\nLo mando todos los días a las *${fmtHora(s?.market_time)} hs* (días hábiles, cuando hay pizarra nueva).\n\n_Cambiar horario:_ \`/admin mercado hora ${n} HH:MM\`\n_Probarlo ahora:_ \`/admin mercado ya ${n}\``
+        ? `🌾 Mercado de granos *activado* en *${grupo.group_name}*.\n\nLo mando *apenas se publica la pizarra del día*, sin buscarla antes de las *${fmtHora(s?.market_time)} hs*. Una vez por día, y solo los días con rueda.\n\n_Cambiar horario:_ \`/admin mercado hora ${n} HH:MM\`\n_Probarlo ahora:_ \`/admin mercado ya ${n}\``
         : `🔕 Mercado de granos *desactivado* en *${grupo.group_name}*.`
     );
   }
@@ -302,7 +302,9 @@ async function comandoMercado(message, client, partes) {
     }
 
     db.setMarketTime(grupo.group_id, fmtHora(hora));
-    return message.reply(`⏰ El mercado sale a las *${fmtHora(hora)} hs* en *${grupo.group_name}*.`);
+    return message.reply(`⏰ En *${grupo.group_name}* empiezo a buscar la pizarra a las *${fmtHora(hora)} hs* y la mando apenas se publique.
+
+_La rueda suele cargarse cerca de las 10:30._`);
   }
 
   if (accion === "ya") {
