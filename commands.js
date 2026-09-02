@@ -536,6 +536,38 @@ async function responderCotizacion(message) {
   }
 }
 
+// De dónde saca el productor los dos números. Sin esto, pedirle
+// "/mbot carry costos 3 8" es pedirle que invente: 3 y 8 no significan nada
+// para alguien que nunca vio la cuenta.
+const EXPLICACION_COSTOS = `
+⚙️ *Los dos números del carry*
+
+*1) Almacenaje* — lo que te cuesta tener una tonelada guardada un mes.
+
+▸ *Si lo dejás en el acopio:* está en tu liquidación, en el renglón de
+gastos de almacenaje. Suele venir como un *porcentaje mensual* del valor.
+Cargalo tal cual, con el signo %:
+\`/mbot carry costos 0,35% 8\`
+
+▸ *Si usás silobolsa propia:* sumá bolsa + embolsado + extracción y dividí
+por las toneladas que entran y por los meses que la vas a tener.
+_Ejemplo: US$ 400 la bolsa con todo, 200 toneladas, 6 meses_
+_→ 400 ÷ 200 ÷ 6 = US$ 0,33 por tonelada por mes._
+\`/mbot carry costos 0,33 8\`  _(sin % = dólares por tonelada por mes)_
+
+*2) Tasa* — el costo anual del dinero que no cobrás mientras no vendés.
+
+▸ *Si tenés deuda* (prefinanciación, tarjeta agro, crédito en dólares):
+poné esa tasa, que es lo que te cuesta de verdad esperar.
+▸ *Si no tenés deuda:* poné lo que rendiría esa plata colocada. Es el costo
+de oportunidad. En dólares, no en pesos.
+
+━━━━━━━━━━━━━━━━━━━━
+*¿No tenés los números a mano?*
+Pedí \`/mbot carry soja\` igual: te muestro cuánto paga el mercado
+por mes de espera, sin suponer nada tuyo. Con eso solo ya podés decidir,
+porque la pregunta se vuelve \"¿me cuesta más o menos que eso?\".
+`.trim();
 // Guía de las funciones de granos, en castellano y con ejemplos. Existe
 // porque las descripciones de una línea del menú no alcanzan: "carry" es
 // jerga, y quien no conoce la palabra nunca va a tipear el comando para
@@ -579,9 +611,11 @@ Es una resta, no una predicción, y necesita *tus dos números*:
 dólares. La tarifa del acopio, o la silobolsa prorrateada.
 ▸ *Tasa* — el costo anual del dinero que no cobrás mientras no vendés.
 
-Se cargan una vez: \`/mbot carry costos 3 8\`
-_(US$ 3 por tonelada por mes, 8% anual)_
+Funciona *sin configurar nada*: te digo cuánto paga el mercado por mes de
+espera. Ahí la pregunta se vuelve fácil: ¿guardar te cuesta más o menos que eso?
 
+Y si querés la resta completa, cargás tus dos números una vez:
+\`/mbot carry costos\` te explica de dónde sacarlos
 No pongo valores por defecto a propósito: el que tiene silo propio y el que
 alquila tienen respuestas opuestas, y las dos están bien.
 
@@ -1045,18 +1079,21 @@ async function handleCommand(message, client) {
 
       // /mbot carry costos <almacenaje> <tasa>
       if (subcommand === "carry" && (arg === "costos" || arg === "costo")) {
-        const almacenaje = Number(String(parts[3] || "").replace(",", "."));
-        const tasa = Number(String(parts[4] || "").replace(",", "."));
+        // Acepta "0,35%" (porcentaje mensual del valor, como cobra el acopio)
+        // y "0,33" (dólares por tonelada por mes, silobolsa propia).
+        const crudo = String(parts[3] || "").replace(",", ".").trim();
+        const esPct = crudo.endsWith("%");
+        const almacenaje = Number(esPct ? crudo.slice(0, -1) : crudo);
+        const tasa = Number(String(parts[4] || "").replace(",", ".").replace("%", ""));
 
-        if (!Number.isFinite(almacenaje) || almacenaje < 0 || almacenaje > 50 ||
+        // Un almacenaje en dólares por encima de 50 es un error de tipeo; en
+        // porcentaje, cualquier cosa arriba de 5% mensual también.
+        const topeAlmacenaje = esPct ? 5 : 50;
+
+        if (!Number.isFinite(almacenaje) || almacenaje < 0 || almacenaje > topeAlmacenaje ||
             !Number.isFinite(tasa) || tasa < 0 || tasa > 100) {
           return message.reply(
-            "⚙️ *Supuestos del carry*\n\n" +
-            "`/mbot carry costos <almacenaje> <tasa>`\n\n" +
-            "▸ *Almacenaje*: lo que te cuesta tener una tonelada guardada un mes, en dólares. La tarifa del acopio, o lo que te sale la silobolsa prorrateada." + `\n` +
-            "▸ *Tasa*: el costo anual del dinero que no cobrás mientras no vendés, en dólares." + `\n\n` +
-            "Ejemplo: `/mbot carry costos 3 8` = US$ 3/t por mes y 8% anual." + `\n\n` +
-            "_Son tus números, no hay default: el que tiene silo propio y el que alquila tienen respuestas distintas y las dos están bien._"
+            EXPLICACION_COSTOS
           );
         }
 
@@ -1064,9 +1101,19 @@ async function handleCommand(message, client) {
           return message.reply("🔒 ¡Alto ahí! Solo los administradores del equipo pueden cambiar esto.");
         }
 
-        db.setCarryCostos(groupId, almacenaje, tasa);
+        // group_settings tiene una foreign key contra groups: guardar sobre un
+        // chat que nunca se registró tira SQLITE_CONSTRAINT. En un privado lo
+        // registramos al vuelo (la persona está configurando lo suyo); en un
+        // grupo hace falta el /mbot add de siempre.
+        if (esChatPrivado(message)) {
+          await asegurarChatPrivado(message, client, groupId);
+        } else if (!db.getGroup(groupId)?.active) {
+          return message.reply(NO_REGISTRADO);
+        }
+
+        db.setCarryCostos(groupId, almacenaje, esPct ? "pct" : "usd", tasa);
         return message.reply(
-          `⚙️ Anotado: almacenaje *US$ ${almacenaje}/t/mes* y costo del dinero *${tasa}% anual* en dólares.` +
+          `⚙️ Anotado: almacenaje *${esPct ? `${almacenaje}% mensual del valor` : `US$ ${almacenaje}/t/mes`}* y costo del dinero *${tasa}% anual* en dólares.` +
           `\n\nAhora podés pedir \`/mbot carry soja\` (o trigo, o maíz).`
         );
       }
@@ -1076,7 +1123,7 @@ async function handleCommand(message, client) {
         return message.reply(
           subcommand === "precio"
             ? "📊 `/mbot precio <grano>` — dónde cae el precio de hoy contra su historia." + `\n\n` + "Granos: trigo, soja, maíz, sorgo, girasol."
-            : "🚜 `/mbot carry <grano>` — vender hoy o guardar, con los números a la vista." + `\n\n` + "Granos con futuros: soja, trigo, maíz." + `\n` + "Configurar tus costos: `/mbot carry costos <almacenaje> <tasa>`"
+            : "🚜 `/mbot carry <grano>` — vender hoy o guardar, con los números a la vista." + `\n\n` + "Granos con futuros: soja, trigo, maíz." + `\n\n` + "_Funciona sin configurar nada: te digo cuánto paga el mercado por mes de espera. Si además cargás tus costos con_ `/mbot carry costos`_, hago la resta completa._"
         );
       }
 
@@ -1103,16 +1150,11 @@ async function handleCommand(message, client) {
         );
       }
 
+      // Sin costos cargados NO cortamos: se muestra lo que paga el mercado por
+      // mes de espera, que no supone nada del productor. Antes esto era un muro
+      // y dejaba la función inservible para quien no tenía los números a mano —
+      // que es casi todo el mundo la primera vez.
       const costos = db.getCarryCostos(groupId);
-      if (!costos) {
-        return message.reply(
-          "⚙️ Antes de calcular el carry necesito *tus* dos números:" + `\n\n` +
-          "▸ *Almacenaje* — lo que te cuesta tener una tonelada guardada un mes, en dólares." + `\n` +
-          "▸ *Tasa* — el costo anual del dinero que no cobrás mientras no vendés, en dólares." + `\n\n` +
-          "`/mbot carry costos 3 8`  _(US$ 3/t por mes, 8% anual)_" + `\n\n` +
-          "_No pongo valores por defecto a propósito: el que tiene silo propio y el que alquila en el acopio tienen respuestas opuestas, y las dos son correctas._"
-        );
-      }
 
       try {
         const [disponible, posiciones] = await Promise.all([
@@ -1131,18 +1173,39 @@ async function handleCommand(message, client) {
         const liquidas = posiciones.filter((p) => p.interesAbierto >= 100).slice(0, 4);
         const elegidas = liquidas.length ? liquidas : posiciones.slice(0, 3);
 
+        if (!costos) {
+          return message.reply(
+            carry.mensajeCarryMercado(grano, {
+              spotUsd: disponible.usd,
+              spotArs: disponible.ars,
+              posiciones: elegidas,
+              fecha: hoyISO,
+            })
+          );
+        }
+
         let dolar = null;
         try {
           const { getMercado } = require("./mercado");
           dolar = (await getMercado())?.dolar?.venta ?? null;
         } catch (e) { /* la conversión a pesos es opcional */ }
 
+        // El almacenaje puede estar cargado como porcentaje del valor: se
+        // resuelve a dólares con el disponible de HOY, no con el de cuando se
+        // configuró, que es como lo cobra el acopio.
+        const almacenajeMes = carry.almacenajeMensualUsd(costos, disponible.usd);
+        const textoAlmacenaje =
+          costos.unidad === "pct"
+            ? `${String(costos.almacenaje).replace(".", ",")}% mensual _(US$ ${almacenajeMes.toFixed(2).replace(".", ",")}/t/mes hoy)_`
+            : null;
+
         return message.reply(
           carry.mensajeCarry(grano, {
             spotUsd: disponible.usd,
             spotArs: disponible.ars,
             posiciones: elegidas,
-            almacenajeMes: costos.almacenajeMes,
+            almacenajeMes,
+            textoAlmacenaje,
             tasaAnual: costos.tasaAnual,
             fecha: hoyISO,
             dolar,

@@ -144,6 +144,14 @@ function mensajeComparacion(codigo, serie) {
 //
 // Interés simple, no compuesto: son horizontes de meses y la diferencia es
 // despreciable frente a la incertidumbre del propio costo de almacenaje.
+// El almacenaje viene en una de dos unidades, porque los acopios lo cobran
+// como PORCENTAJE mensual del valor del grano y no en dólares fijos. Pedirlo
+// en dólares por tonelada obligaría al productor a hacer una cuenta con un
+// número que no tiene a mano.
+function almacenajeMensualUsd({ almacenaje, unidad }, spotUsd) {
+  return unidad === "pct" ? spotUsd * (almacenaje / 100) : almacenaje;
+}
+
 function calcularCarry({ spotUsd, futuroUsd, meses, almacenajeMes, tasaAnual }) {
   const mercado = futuroUsd - spotUsd;
   const almacenaje = almacenajeMes * meses;
@@ -169,7 +177,54 @@ function almacenajeDeEquilibrio({ spotUsd, futuroUsd, meses, tasaAnual }) {
   return (futuroUsd - spotUsd - financiero) / meses;
 }
 
-function mensajeCarry(codigo, { spotUsd, spotArs, posiciones, almacenajeMes, tasaAnual, fecha, dolar }) {
+// Lo que paga el mercado, mensualizado. Es la vista SIN supuestos: no depende
+// de ningún costo, es aritmética sobre dos precios publicados. Y da vuelta la
+// pregunta difícil ("¿cuánto te cuesta guardar?") por una fácil ("¿te cuesta
+// más o menos que esto por mes?"), que el productor puede contestar incluso a
+// ojo, sin buscar la liquidación.
+function mensajeCarryMercado(codigo, { spotUsd, spotArs, posiciones, fecha }) {
+  const nombre = alertas.nombreGrano(codigo);
+  const emoji = alertas.emojiGrano(codigo);
+
+  const bloques = posiciones.map((p) => {
+    const bruto = p.precio - spotUsd;
+    const porMes = bruto / p.meses;
+    const signo = bruto >= 0 ? "+" : "−";
+
+    const lectura = porMes > 0
+      ? `→ Te conviene esperar si guardar y financiar te cuesta *menos de US$ ${usd(porMes, 2)}/t por mes*.`
+      : `→ Esa posición vale menos que el disponible: esperar no se paga.`;
+
+    const meses = p.meses.toFixed(1).replace(".", ",");
+
+    return [
+      `📆 *${p.nombre}* — US$ ${usd(p.precio, 1)}/t  _(${meses} meses)_`,
+      `    Paga ${signo}US$ ${usd(Math.abs(bruto))}/t en total = *${signo}US$ ${usd(Math.abs(porMes), 2)}/t por mes*`,
+      `    ${lectura}`,
+    ].join("\n");
+  });
+
+  const enPesos = spotArs ? `  _($ ${alertas.pesos(spotArs)})_` : "";
+
+  return [
+    `${emoji} *${nombre} — qué paga el mercado por esperar*`,
+    `📅 Rueda del ${fecha}`,
+    ``,
+    `Disponible Rosario: *US$ ${usd(spotUsd, 1)}/t*${enPesos}`,
+    ``,
+    bloques.join("\n\n"),
+    ``,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `Esto no supone nada sobre vos: son dos precios publicados y una división.`,
+    ``,
+    `Si cargás *tus* costos hago la resta completa y te digo cuánto te queda:`,
+    `\`/mbot carry costos\`  _(te explico de dónde sacar cada número)_`,
+    ``,
+    `_Fuente: Matba Rofex. Información de referencia, no es una recomendación de venta._`,
+  ].join("\n");
+}
+
+function mensajeCarry(codigo, { spotUsd, spotArs, posiciones, almacenajeMes, tasaAnual, fecha, dolar, textoAlmacenaje }) {
   const nombre = alertas.nombreGrano(codigo);
   const emoji = alertas.emojiGrano(codigo);
 
@@ -212,7 +267,7 @@ function mensajeCarry(codigo, { spotUsd, spotArs, posiciones, almacenajeMes, tas
     `Disponible Rosario: *US$ ${usd(spotUsd, 1)}/t*` +
     (spotArs ? `  _($ ${alertas.pesos(spotArs)})_` : "") +
     `\n\n${bloques.join("\n\n")}\n\n` +
-    `⚙️ *Tus supuestos:* almacenaje US$ ${usd(almacenajeMes, 2)}/t/mes · costo del dinero ${usd(tasaAnual, 1)}% anual en dólares.\n` +
+    `⚙️ *Tus supuestos:* almacenaje ${textoAlmacenaje || `US$ ${usd(almacenajeMes, 2)}/t/mes`} · costo del dinero ${usd(tasaAnual, 1)}% anual en dólares.\n` +
     `_Cambialos con_ \`/mbot carry costos <almacenaje> <tasa>\`\n\n` +
     `_La cuenta va en dólares porque el grano y los futuros cotizan en dólares; ` +
     `los pesos son conversión al cambio de hoy. No incluye flete, comisiones ni mermas._\n\n` +
@@ -221,6 +276,8 @@ function mensajeCarry(codigo, { spotUsd, spotArs, posiciones, almacenajeMes, tas
 }
 
 module.exports = {
+  mensajeCarryMercado,
+  almacenajeMensualUsd,
   estadisticas,
   mensajeComparacion,
   calcularCarry,
