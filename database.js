@@ -82,6 +82,33 @@ db.exec(`
     FOREIGN KEY (idea_id) REFERENCES ideas(id)
   );
 
+  -- Alertas de precio, puestas por la gente: "avisame cuando la soja toque X".
+  -- El bot no opina, solo avisa que se tocó el número que puso el usuario.
+  -- chat_id es DONDE avisa (el grupo o el privado donde se creó), no quién la
+  -- puso: una alerta creada en un privado no tiene por qué verla un grupo.
+  -- direccion ('sube'|'baja') se deduce del precio del día en que se creó, y es
+  -- lo que define qué es "cruzar" el objetivo.
+  CREATE TABLE IF NOT EXISTS market_alerts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    TEXT NOT NULL,
+    user_id    TEXT,
+    user_name  TEXT,
+    producto   TEXT NOT NULL,
+    direccion  TEXT NOT NULL,
+    objetivo   REAL NOT NULL,
+    creada_en  DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Historia de la pizarra: el feed solo devuelve el día, así que si no la
+  -- guardamos no hay con qué comparar nunca. Una fila por grano y por día.
+  CREATE TABLE IF NOT EXISTS market_history (
+    fecha      TEXT NOT NULL,
+    producto   TEXT NOT NULL,
+    importe    REAL NOT NULL,
+    guardado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (fecha, producto)
+  );
+
   -- Mapa emoji → idea del último listado de cada grupo: resuelve a qué idea
   -- corresponde una reacción.
   CREATE TABLE IF NOT EXISTS idea_polls (
@@ -216,6 +243,22 @@ function deleteGroupCompleto(groupId) {
     return db.prepare(`DELETE FROM groups WHERE group_id = ?`).run(groupId).changes > 0;
   });
   return borrar();
+}
+
+// Un chat privado se registra como cualquier otro chat, pero al reves que un
+// grupo: NADA prendido de entrada. En un grupo alguien hace /mbot add porque
+// quiere las frases; en un privado la persona pidio una cosa puntual y no
+// corresponde empezar a mandarle lo demas. Solo aplica los defaults la primera
+// vez: si el chat ya existia, respeta lo que la persona haya elegido.
+function registrarChatPrivado(chatId, nombre) {
+  const nuevo = !db.prepare(`SELECT 1 FROM groups WHERE group_id = ?`).get(chatId);
+  addGroup(chatId, nombre);
+  if (nuevo) {
+    db.prepare(`
+      UPDATE group_settings SET phrases_enabled = 0, market_enabled = 0 WHERE group_id = ?
+    `).run(chatId);
+  }
+  return nuevo;
 }
 
 // Reactiva un grupo ya conocido sin tocar su nombre ni su token.
@@ -527,6 +570,62 @@ function aplicarVotosDePoll(groupId, pollMsgId, votos) {
   return aplicar();
 }
 
+// --- ALERTAS DE PRECIO -------------------------------------------------------
+const MAX_ALERTAS_POR_CHAT = 20;
+
+function addAlerta(chatId, userId, userName, producto, direccion, objetivo) {
+  const info = db.prepare(`
+    INSERT INTO market_alerts (chat_id, user_id, user_name, producto, direccion, objetivo)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(chatId, userId, userName, producto, direccion, objetivo);
+  return info.lastInsertRowid;
+}
+
+function getAlertasDeChat(chatId) {
+  return db.prepare(`SELECT * FROM market_alerts WHERE chat_id = ? ORDER BY id ASC`).all(chatId);
+}
+
+function getTodasLasAlertas() {
+  return db.prepare(`SELECT * FROM market_alerts ORDER BY chat_id, id`).all();
+}
+
+function countAlertasDeChat(chatId) {
+  return db.prepare(`SELECT COUNT(*) as count FROM market_alerts WHERE chat_id = ?`).get(chatId).count;
+}
+
+// Acotado al chat: una alerta solo la borra quien la ve.
+function deleteAlerta(chatId, id) {
+  const info = db.prepare(`DELETE FROM market_alerts WHERE chat_id = ? AND id = ?`).run(chatId, id);
+  return info.changes > 0;
+}
+
+// Cuando una alerta se cumple se borra: avisar todos los dias que la soja sigue
+// arriba del objetivo seria ruido, no informacion.
+function deleteAlertas(ids) {
+  const borrar = db.transaction((lista) => {
+    const stmt = db.prepare(`DELETE FROM market_alerts WHERE id = ?`);
+    for (const id of lista) stmt.run(id);
+  });
+  return borrar(ids);
+}
+
+// --- HISTORIA DE LA PIZARRA --------------------------------------------------
+// Idempotente: el tick puede pasar varias veces por la misma pizarra del dia.
+function guardarPizarra(fechaISO, granos) {
+  const guardar = db.transaction(() => {
+    const stmt = db.prepare(`
+      INSERT INTO market_history (fecha, producto, importe) VALUES (?, ?, ?)
+      ON CONFLICT(fecha, producto) DO UPDATE SET importe = excluded.importe
+    `);
+    for (const g of granos) stmt.run(fechaISO, g.codigo, g.importe);
+  });
+  return guardar();
+}
+
+function contarDiasDeHistoria() {
+  return db.prepare(`SELECT COUNT(DISTINCT fecha) as count FROM market_history`).get().count;
+}
+
 // --- MODO SOLO MERCADO -------------------------------------------------------
 // Sin fila en group_settings el default es "prendido": un grupo que todavia no
 // se configuro tiene que comportarse como siempre.
@@ -579,6 +678,16 @@ function markMarketSent(groupId, hoyISO) {
 
 module.exports = {
   addGroup,
+  registrarChatPrivado,
+  addAlerta,
+  getAlertasDeChat,
+  getTodasLasAlertas,
+  countAlertasDeChat,
+  deleteAlerta,
+  deleteAlertas,
+  MAX_ALERTAS_POR_CHAT,
+  guardarPizarra,
+  contarDiasDeHistoria,
   isPhrasesEnabled,
   setPhrasesEnabled,
   getAllGroups,

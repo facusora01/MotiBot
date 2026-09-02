@@ -1,6 +1,7 @@
 const db = require("./database");
 const { getTunnelUrl } = require("./tunnel-url");
 const { handleAdminPanel, AYUDA: AYUDA_PANEL } = require("./panel");
+const alertas = require("./alertas");
 
 const { exec } = require("child_process");
 
@@ -97,6 +98,8 @@ Acá tenés todo lo que puedo hacer por vos y tu equipo:
 
 *🚜 Mercado de granos:*
 ▸ \`/mbot mercado\` — Cotización del día (trigo, soja, maíz, sorgo y girasol)
+▸ \`/mbot alerta soja 600000\` — Avisar cuando la pizarra toque ese precio
+▸ \`/mbot alertas\` — Ver las alertas de este chat
 
 *💡 Información y Ansiedad:*
 ▸ \`/mbot time\` — ⏳ Cuenta regresiva para activación de librería custom
@@ -127,6 +130,7 @@ En este equipo estoy solo para la pizarra de cotizaciones:
 
 ▸ \`/mbot mercado\` — Ver la cotización del día
 ▸ \`/mbot mercado on|off\` — Prender o apagar la pizarra diaria (admins)
+▸ \`/mbot alerta soja 600000\` — Avisar cuando la pizarra toque ese precio
 
 _Todos los días la mando sola, apenas se publica el tablero._
 
@@ -469,6 +473,65 @@ async function handlePrivateCommand(message) {
 — *${frase.autor}*`);
 }
 
+// Comandos que una persona cualquiera puede usar en el privado del bot. El
+// resto se sigue ignorando en silencio: el privado no es una consola.
+const PRIVADO_PREFIJOS = ["/mbot help", "/mbot mercado", "/mbot frases", "/mbot alerta", "/mbot alertas"];
+
+function empiezaConAlguno(lowerBody, prefijos) {
+  return prefijos.some((c) => lowerBody === c || lowerBody.startsWith(c + " "));
+}
+
+// En un privado la persona es dueña de su chat: no hay admins que consultar.
+async function puedeConfigurar(message, client) {
+  if (esChatPrivado(message)) return true;
+  return isAdmin(message, client);
+}
+
+// En el privado no existe el /mbot add: el chat se registra solo, la primera
+// vez que la persona prende algo, y sin nada más prendido de arrastre.
+async function asegurarChatPrivado(message, client, chatId) {
+  if (db.getGroup(chatId)?.active) return;
+  const nombre = await nombreDeMensaje(client, message);
+  db.registrarChatPrivado(chatId, nombre || "Privado");
+}
+
+// La cotización del día. Se pide desde varios lados (grupo, privado registrado
+// y privado suelto), así que el manejo del error vive en un solo lugar.
+async function responderCotizacion(message) {
+  try {
+    const { getMercado } = require("./mercado");
+    const { texto } = await getMercado();
+    return message.reply(texto);
+  } catch (error) {
+    console.error("❌ Error leyendo la pizarra de granos:", error.message);
+    return message.reply("⚠️ No pude leer la pizarra de granos ahora mismo. Probá de nuevo en un rato.");
+  }
+}
+
+// Menú del privado: corto, solo lo que ahí se puede hacer.
+const HELP_PRIVADO = `
+🤖 *MotiBot por privado*
+
+Acá podés tener lo tuyo, sin molestar a ningún grupo:
+
+*🚜 Mercado de granos:*
+▸ \`/mbot mercado\` — Cotización del día
+▸ \`/mbot mercado on\` — Que te la mande todos los días acá
+▸ \`/mbot mercado off\` — Dejar de recibirla
+
+*🔔 Alertas de precio:*
+▸ \`/mbot alerta soja 600000\` — Avisarte cuando la soja toque ese precio
+▸ \`/mbot alertas\` — Ver las tuyas
+▸ \`/mbot alerta borrar <n>\` — Borrar una
+
+*✨ Frases:*
+▸ \`/mbot phrase\` — Una frase ahora (una cada 12 h)
+▸ \`/mbot frases on\` — Recibir la frase del día todos los días acá
+▸ \`/mbot frases off\` — Dejar de recibirla
+
+_El aviso de una alerta llega solo acá: nadie más lo ve._
+`.trim();
+
 // ─── HANDLER PRINCIPAL ────────────────────────────────────────────────────────
 async function handleCommand(message, client) {
   try {
@@ -490,8 +553,14 @@ async function handleCommand(message, client) {
       const superAdmin = await esSuperAdmin(message);
 
       if (!superAdmin) {
+        // La frase por privado conserva su ventana propia de 12 h esté o no
+        // suscripto el chat: suscribirse no puede ser la vía para pedir más
+        // seguido que el resto.
         if (lowerBody === "/mbot phrase") return handlePrivateCommand(message);
-        return;
+
+        // Lo demás que se puede hacer en un privado (mercado, alertas, la
+        // suscripción a las frases). Cualquier otra cosa, silencio.
+        if (!empiezaConAlguno(lowerBody, PRIVADO_PREFIJOS)) return;
       }
 
       // Mientras el super admin no adopte su propio privado con /mbot add, le
@@ -515,11 +584,11 @@ async function handleCommand(message, client) {
     // que lo llamen. Quedan afuera del silencio los comandos que tienen que
     // funcionar igual: la pizarra, el menú, el alta/baja y el botón de pánico.
     const SOLO_MERCADO_OK = [
-      "/mbot mercado", "/mbot mercado on", "/mbot mercado off",
-      "/mbot frases", "/mbot frases on", "/mbot frases off",
+      "/mbot mercado", "/mbot frases", "/mbot alerta", "/mbot alertas",
       "/mbot help", "/mbot add", "/mbot remove", "/mbot stop", "/mbot sync",
     ];
-    if (!esChatPrivado(message) && !db.isPhrasesEnabled(groupId) && !SOLO_MERCADO_OK.includes(lowerBody)) {
+    if (!esChatPrivado(message) && !db.isPhrasesEnabled(groupId) &&
+        !empiezaConAlguno(lowerBody, SOLO_MERCADO_OK)) {
       return;
     }
 
@@ -868,6 +937,110 @@ async function handleCommand(message, client) {
       return message.reply('❓ ¡Me dejaste por la mitad! Usá `/mbot help` para ver cómo pedirme las cosas.');
     }
 
+    // --- alertas de precio ---
+    // Van antes de la validación de argumentos porque llevan dos (grano y
+    // precio) y esas listas asumen uno solo. El umbral lo pone la persona:
+    // MotiBot no sugiere números ni dice si conviene vender, solo avisa que
+    // se tocó el precio que le pidieron mirar.
+    if (subcommand === "alerta" || subcommand === "alertas") {
+      const USO_ALERTA =
+        "🔔 *Alertas de precio*\n\n`/mbot alerta <grano> <precio>`\n\nEjemplo: `/mbot alerta soja 600000` — te aviso el día que la pizarra la toque.\nGranos: trigo, soja, maíz, sorgo, girasol.\n\nVer las que tenés: `/mbot alertas`\nBorrar una: `/mbot alerta borrar <n>`";
+
+      // Listado: /mbot alertas, o /mbot alerta list.
+      const pideListado =
+        subcommand === "alertas" || ["list", "lista", "ver"].includes(arg);
+
+      if (pideListado) {
+        const mias = db.getAlertasDeChat(groupId);
+        if (!mias.length) {
+          return message.reply("🔔 No hay ninguna alerta en este chat." + `\n\n` + USO_ALERTA);
+        }
+        return message.reply(
+          `🔔 *Alertas de este chat* (${mias.length})\n\n` +
+          mias.map((a, i) => alertas.describir(a, i)).join("\n") +
+          `\n\n_Borrar una:_ \`/mbot alerta borrar <n>\``
+        );
+      }
+
+      // Borrado: /mbot alerta borrar <n>, por el número del listado.
+      if (arg === "borrar" || arg === "borra" || arg === "delete") {
+        const mias = db.getAlertasDeChat(groupId);
+        const n = parseInt(parts[3], 10);
+
+        if (!Number.isInteger(n) || n < 1 || n > mias.length) {
+          return message.reply(
+            mias.length
+              ? `❌ Elegí un número del 1 al ${mias.length} (mirá \`/mbot alertas\`).`
+              : "🔔 No hay ninguna alerta para borrar en este chat."
+          );
+        }
+
+        const victima = mias[n - 1];
+        db.deleteAlerta(groupId, victima.id);
+        return message.reply(
+          `🗑️ Listo, borré la alerta de *${alertas.nombreGrano(victima.producto)}* en $ ${alertas.pesos(victima.objetivo)}.`
+        );
+      }
+
+      if (!arg) return message.reply(USO_ALERTA);
+
+      // Alta: /mbot alerta <grano> <precio>
+      const grano = alertas.parsearGrano(arg);
+      if (!grano) {
+        return message.reply(`❌ No conozco el grano "${arg}".` + `\n\n` + USO_ALERTA);
+      }
+
+      const objetivo = alertas.parsearMonto(parts.slice(3).join(""));
+      if (!objetivo) {
+        return message.reply("❌ No entendí el precio. Escribilo en pesos por tonelada: `600000`, `600.000` o `600k`." + `\n\n` + USO_ALERTA);
+      }
+
+      if (db.countAlertasDeChat(groupId) >= db.MAX_ALERTAS_POR_CHAT) {
+        return message.reply(
+          `❌ Este chat ya tiene ${db.MAX_ALERTAS_POR_CHAT} alertas, que es el tope. Borrá alguna con \`/mbot alerta borrar <n>\`.`
+        );
+      }
+
+      // Necesitamos el precio de hoy para saber si la alerta espera una suba
+      // o una baja. Sin pizarra no se puede crear bien, y crearla con una
+      // dirección inventada haría que dispare cuando no corresponde.
+      let precioHoy = null;
+      let fechaPizarra = null;
+      try {
+        const { getMercado } = require("./mercado");
+        const mercado = await getMercado();
+        fechaPizarra = mercado.fecha;
+        precioHoy = mercado.granos.find((g) => g.codigo === grano)?.importe ?? null;
+      } catch (error) {
+        console.error("❌ No pude leer la pizarra para crear la alerta:", error.message);
+      }
+
+      if (precioHoy === null) {
+        return message.reply("⚠️ No pude leer la pizarra ahora mismo, así que no sé si esperar una suba o una baja. Probá de nuevo en un rato.");
+      }
+
+      const direccion = alertas.direccionPara(precioHoy, objetivo);
+      const quien = await nombreDeMensaje(client, message);
+      const userId = message.author || message.from;
+
+      db.addAlerta(groupId, userId, quien, grano, direccion, objetivo);
+
+      const nombre = alertas.nombreGrano(grano);
+      const emoji = alertas.emojiGrano(grano);
+      const distancia = Math.abs(objetivo - precioHoy);
+      const pct = precioHoy ? (distancia / precioHoy) * 100 : 0;
+      const rumbo = direccion === "sube" ? "suba" : "baje";
+      const donde = esChatPrivado(message) ? "acá, por privado" : "en este grupo";
+
+      return message.reply(
+        `🔔 *Alerta creada.*\n\n` +
+        `${emoji} Te aviso cuando la *${nombre}* ${rumbo} a *$ ${alertas.pesos(objetivo)}*.` +
+        `\n\nHoy está en $ ${alertas.pesos(precioHoy)} _(pizarra del ${fechaPizarra})_: falta que ${rumbo} $ ${alertas.pesos(distancia)}, un ${pct.toFixed(1).replace(".", ",")}%.` +
+        `\n\nEl aviso llega ${donde}, una sola vez, y después la borro.` +
+        `\n\n_Información de referencia, no es una recomendación de venta._`
+      );
+    }
+
     const UNKNOWN_MSG = `❓ ¡Epa! Ese comando no lo tengo en mi memoria. Usá \`/mbot help\` para ver mi manual de instrucciones.`;
 
     // parts = ["/mbot", subcommand, arg?] → length 2 = sin arg extra, 3 = con arg.
@@ -898,6 +1071,10 @@ async function handleCommand(message, client) {
           `_Y el menú que ve todo el mundo:_\n\n${HELP_TEXT}`
         );
       }
+      // En un privado, el menú del privado: el HELP_TEXT habla de "el equipo",
+      // los admins y los paneles del grupo, que ahí no aplican.
+      if (esChatPrivado(message)) return message.reply(HELP_PRIVADO);
+
       // En un grupo solo-mercado, el menú corto: el resto de los comandos ahí
       // no responden, ofrecerlos sería mentir.
       if (!esChatPrivado(message) && !db.isPhrasesEnabled(groupId)) {
@@ -1036,8 +1213,20 @@ async function handleCommand(message, client) {
     // El admin del grupo decide si quiere el MotiBot completo o solo la
     // pizarra. Sin argumento, dice cómo está.
     if (subcommand === "frases") {
+      // En un privado, prenderlas registra el chat; apagarlas o consultarlas no
+      // tiene sentido si nunca hubo nada.
+      if (esChatPrivado(message) && arg === "on") {
+        await asegurarChatPrivado(message, client, groupId);
+      }
+
       const group = db.getGroup(groupId);
-      if (!group || !group.active) return message.reply(NO_REGISTRADO);
+      if (!group || !group.active) {
+        return message.reply(
+          esChatPrivado(message)
+            ? "✨ Todavía no te estoy mandando nada por acá.\n\n_Para recibir la frase del día:_ `/mbot frases on`"
+            : NO_REGISTRADO
+        );
+      }
 
       const prendidas = db.isPhrasesEnabled(groupId);
 
@@ -1053,8 +1242,7 @@ async function handleCommand(message, client) {
         return message.reply("❌ Usá `/mbot frases on` o `/mbot frases off`.");
       }
 
-      const adminStatus = await isAdmin(message, client);
-      if (!adminStatus) {
+      if (!(await puedeConfigurar(message, client))) {
         return message.reply("🔒 ¡Alto ahí! Solo los administradores del equipo pueden cambiar esto.");
       }
 
@@ -1089,12 +1277,25 @@ async function handleCommand(message, client) {
     // prende o apaga la pizarra diaria. No hace falta que el super admin
     // autorice nada antes: quien la prende, la habilita.
     if (subcommand === "mercado") {
+      // El privado se registra solo al prender la pizarra; para verla una vez
+      // (sin argumento) no hace falta registrar nada.
+      if (esChatPrivado(message) && arg === "on") {
+        await asegurarChatPrivado(message, client, groupId);
+      }
+
       const group = db.getGroup(groupId);
-      if (!group || !group.active) return message.reply(NO_REGISTRADO);
+      if (!group || !group.active) {
+        // En un privado sin registrar igual mostramos la cotización si la
+        // piden: es información pública y no compromete a nada.
+        if (!esChatPrivado(message)) return message.reply(NO_REGISTRADO);
+        if (arg) {
+          return message.reply("🚜 Todavía no te mando la pizarra por acá.\n\n_Para recibirla todos los días:_ `/mbot mercado on`");
+        }
+        return responderCotizacion(message);
+      }
 
       if (arg === "on" || arg === "off") {
-        const adminStatus = await isAdmin(message, client);
-        if (!adminStatus) {
+        if (!(await puedeConfigurar(message, client))) {
           return message.reply("🔒 ¡Alto ahí! Solo los administradores del equipo pueden cambiar esto.");
         }
 
@@ -1120,14 +1321,7 @@ async function handleCommand(message, client) {
         return message.reply("🔕 La pizarra de granos está apagada en este equipo.\n\n_Un admin puede prenderla con_ `/mbot mercado on`.");
       }
 
-      try {
-        const { getMercado } = require("./mercado");
-        const { texto } = await getMercado();
-        return message.reply(texto);
-      } catch (error) {
-        console.error("❌ Error leyendo la pizarra de granos:", error.message);
-        return message.reply("⚠️ No pude leer la pizarra de granos ahora mismo. Probá de nuevo en un rato.");
-      }
+      return responderCotizacion(message);
     }
 
     // ── 1. Valid endpoints ──

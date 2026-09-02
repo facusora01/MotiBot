@@ -11,6 +11,7 @@ const { alertarRevinculacion } = require("./notify");
 const { respaldarSesion, restaurarSesionSiHaceFalta, borrarSesionYBackup } = require("./session-backup");
 const { getTunnelUrl } = require("./tunnel-url");
 const { getMercado, fechaPizarraISO } = require("./mercado");
+const alertas = require("./alertas");
 
 const HORA_ENVIO = process.env.HORA_ENVIO || "08:00";
 
@@ -243,6 +244,67 @@ async function enviarMercado(client, ahoraHHMM) {
       console.log(`🌾 [${hoy.iso}] Mercado enviado a ${grupo.group_name}`);
     } catch (error) {
       console.error(`❌ Error enviando el mercado a ${grupo.group_name}:`, error.message);
+    }
+  }
+}
+
+// Guarda la pizarra del día y dispara las alertas que se hayan cumplido.
+//
+// Corre una sola vez por día por dos motivos: la pizarra publica UN valor por
+// grano y por día (es el precio de referencia de la Cámara, no un tick), y
+// avisar todos los días que la soja sigue arriba del objetivo sería ruido. Por
+// eso la alerta cumplida se borra después de avisar.
+//
+// MotiBot no opina sobre el número: el umbral lo puso la persona.
+let pizarraProcesada = null; // fecha ISO de la última pizarra ya procesada
+
+async function procesarPizarraDelDia(client, ahoraHHMM) {
+  const hoy = fechaArgentina();
+  if (pizarraProcesada === hoy.iso) return;
+
+  // Ventana de sondeo: la rueda se publica cerca de las 10:30. Fuera de esa
+  // franja no tiene sentido pegarle al feed.
+  const ahora = aMinutos(ahoraHHMM);
+  if (ahora < aMinutos("08:00") || ahora > aMinutos("20:00")) return;
+
+  // Si no hay a quién avisarle ni nada que guardar, no molestamos al feed.
+  const pendientes = db.getTodasLasAlertas();
+  if (!pendientes.length && !db.getMarketGroups().length) return;
+
+  let mercado;
+  try {
+    mercado = await getMercado();
+  } catch (error) {
+    return; // enviarMercado ya loguea el fallo de lectura
+  }
+
+  if (fechaPizarraISO(mercado.fecha) !== hoy.iso) return;
+
+  pizarraProcesada = hoy.iso;
+
+  // Historia: el feed solo devuelve el día, así que si no la guardamos ahora no
+  // hay con qué comparar nunca.
+  try {
+    db.guardarPizarra(hoy.iso, mercado.granos);
+  } catch (error) {
+    console.error("❌ No pude guardar la pizarra del día:", error.message);
+  }
+
+  const porChat = alertas.evaluar(mercado.granos);
+  if (!porChat.size) return;
+
+  for (const [chatId, cumplidas] of porChat) {
+    try {
+      await conTimeout(
+        client.sendMessage(chatId, alertas.mensajeDisparo(cumplidas, mercado.fecha)),
+        REPLY_TIMEOUT,
+        `alerta a ${chatId}`
+      );
+      // Recién después de avisar: si el envío falla, mañana se reintenta.
+      db.deleteAlertas(cumplidas.map((c) => c.alerta.id));
+      console.log(`🔔 [${hoy.iso}] ${cumplidas.length} alerta(s) avisadas en ${chatId}`);
+    } catch (error) {
+      console.error(`❌ Error avisando alertas en ${chatId}:`, error.message);
     }
   }
 }
@@ -482,6 +544,7 @@ client.on("ready", async () => {
     }
 
     await enviarMercado(client, now);
+    await procesarPizarraDelDia(client, now);
   } catch (err) {
     console.error("⚠️ Error en tick del scheduler (se omite, no se cae el bot):", err.message);
   }
@@ -610,8 +673,12 @@ async function processMessage(message) {
     // esSuperAdmin puede pegarle al contacto para resolver un @lid, por eso va
     // último: solo corre para comandos reales fuera de la lista corta.
     const esGrupo = from.endsWith("@g.us") || !!message.author;
-    const PRIVADOS_OK = ["/mbot phrase", "/mbot stop"];
-    if (!esGrupo && !PRIVADOS_OK.includes(lowerBody) && !(await esSuperAdmin(message))) return;
+    // handleCommand vuelve a filtrar con la lista fina; acá solo evitamos
+    // resolver el contacto (que puede pegarle a la página) para los mensajes
+    // que seguro no son para nosotros.
+    const PRIVADOS_OK = ["/mbot phrase", "/mbot stop", "/mbot help", "/mbot mercado", "/mbot frases", "/mbot alerta", "/mbot alertas"];
+    const okEnPrivado = PRIVADOS_OK.some((c) => lowerBody === c || lowerBody.startsWith(c + " "));
+    if (!esGrupo && !okEnPrivado && !(await esSuperAdmin(message))) return;
 
     const msgId = message.id?._serialized || message.id?.id;
     if (yaProcesado(msgId)) return;
