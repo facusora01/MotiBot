@@ -29,6 +29,8 @@ db.exec(`
     market_enabled       INTEGER DEFAULT 0,
     market_time          TEXT DEFAULT '09:00',
     market_last_sent     TEXT,
+    carry_storage        REAL,
+    carry_rate           REAL,
     FOREIGN KEY (group_id) REFERENCES groups(group_id)
   );
 
@@ -145,6 +147,15 @@ try {
 
 try {
   db.exec(`ALTER TABLE group_settings ADD COLUMN market_last_sent TEXT`);
+} catch (e) {}
+
+// Supuestos del carry: almacenaje en USD/t/mes y costo del dinero anual en
+// dolares. NULL = sin configurar, y en ese caso el carry no se muestra: una
+// cuenta con supuestos que el productor no eligio es peor que ninguna cuenta.
+try {
+  db.exec(`ALTER TABLE group_settings ADD COLUMN carry_storage REAL`);
+  db.exec(`ALTER TABLE group_settings ADD COLUMN carry_rate REAL`);
+  console.log("🔧 Migración: Columnas de supuestos del carry listas.");
 } catch (e) {}
 
 try {
@@ -570,6 +581,22 @@ function aplicarVotosDePoll(groupId, pollMsgId, votos) {
   return aplicar();
 }
 
+// --- SUPUESTOS DEL CARRY -----------------------------------------------------
+function getCarryCostos(groupId) {
+  const row = db.prepare(`
+    SELECT carry_storage, carry_rate FROM group_settings WHERE group_id = ?
+  `).get(groupId);
+  if (!row || row.carry_storage === null || row.carry_rate === null) return null;
+  return { almacenajeMes: row.carry_storage, tasaAnual: row.carry_rate };
+}
+
+function setCarryCostos(groupId, almacenajeMes, tasaAnual) {
+  db.prepare(`INSERT OR IGNORE INTO group_settings (group_id) VALUES (?)`).run(groupId);
+  db.prepare(`
+    UPDATE group_settings SET carry_storage = ?, carry_rate = ? WHERE group_id = ?
+  `).run(almacenajeMes, tasaAnual, groupId);
+}
+
 // --- ALERTAS DE PRECIO -------------------------------------------------------
 const MAX_ALERTAS_POR_CHAT = 20;
 
@@ -679,6 +706,8 @@ function markMarketSent(groupId, hoyISO) {
 module.exports = {
   addGroup,
   registrarChatPrivado,
+  getCarryCostos,
+  setCarryCostos,
   addAlerta,
   getAlertasDeChat,
   getTodasLasAlertas,

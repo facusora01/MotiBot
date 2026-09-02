@@ -2,6 +2,8 @@ const db = require("./database");
 const { getTunnelUrl } = require("./tunnel-url");
 const { handleAdminPanel, AYUDA: AYUDA_PANEL } = require("./panel");
 const alertas = require("./alertas");
+const matba = require("./matba");
+const carry = require("./carry");
 
 const { exec } = require("child_process");
 
@@ -100,6 +102,8 @@ Acá tenés todo lo que puedo hacer por vos y tu equipo:
 ▸ \`/mbot mercado\` — Cotización del día (trigo, soja, maíz, sorgo y girasol)
 ▸ \`/mbot alerta soja 600000\` — Avisar cuando la pizarra toque ese precio
 ▸ \`/mbot alertas\` — Ver las alertas de este chat
+▸ \`/mbot precio soja\` — Dónde cae el precio de hoy contra su historia
+▸ \`/mbot carry soja\` — Vender hoy o guardar, con los números a la vista
 
 *💡 Información y Ansiedad:*
 ▸ \`/mbot time\` — ⏳ Cuenta regresiva para activación de librería custom
@@ -131,6 +135,8 @@ En este equipo estoy solo para la pizarra de cotizaciones:
 ▸ \`/mbot mercado\` — Ver la cotización del día
 ▸ \`/mbot mercado on|off\` — Prender o apagar la pizarra diaria (admins)
 ▸ \`/mbot alerta soja 600000\` — Avisar cuando la pizarra toque ese precio
+▸ \`/mbot precio soja\` — Dónde cae el precio de hoy contra su historia
+▸ \`/mbot carry soja\` — Vender hoy o guardar, con los números a la vista
 
 _Todos los días la mando sola, apenas se publica el tablero._
 
@@ -475,7 +481,7 @@ async function handlePrivateCommand(message) {
 
 // Comandos que una persona cualquiera puede usar en el privado del bot. El
 // resto se sigue ignorando en silencio: el privado no es una consola.
-const PRIVADO_PREFIJOS = ["/mbot help", "/mbot mercado", "/mbot frases", "/mbot alerta", "/mbot alertas"];
+const PRIVADO_PREFIJOS = ["/mbot help", "/mbot mercado", "/mbot frases", "/mbot alerta", "/mbot alertas", "/mbot precio", "/mbot carry"];
 
 function empiezaConAlguno(lowerBody, prefijos) {
   return prefijos.some((c) => lowerBody === c || lowerBody.startsWith(c + " "));
@@ -493,6 +499,23 @@ async function asegurarChatPrivado(message, client, chatId) {
   if (db.getGroup(chatId)?.active) return;
   const nombre = await nombreDeMensaje(client, message);
   db.registrarChatPrivado(chatId, nombre || "Privado");
+}
+
+// El server puede correr en UTC: la rueda "de hoy" tiene que ser la argentina.
+function hoyArgentinaISO() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Argentina/Buenos_Aires",
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+}
+
+// Cuántas ruedas mirar hacia atrás para las comparaciones: dos años, que cubre
+// el promedio de 90 ruedas y el mínimo/máximo de los últimos 12 meses con
+// margen para feriados.
+function desdeDosAnios(hastaISO) {
+  const d = new Date(`${hastaISO}T00:00:00Z`);
+  d.setUTCFullYear(d.getUTCFullYear() - 2);
+  return d.toISOString().slice(0, 10);
 }
 
 // La cotización del día. Se pide desde varios lados (grupo, privado registrado
@@ -523,6 +546,8 @@ Acá podés tener lo tuyo, sin molestar a ningún grupo:
 ▸ \`/mbot alerta soja 600000\` — Avisarte cuando la soja toque ese precio
 ▸ \`/mbot alertas\` — Ver las tuyas
 ▸ \`/mbot alerta borrar <n>\` — Borrar una
+▸ \`/mbot precio soja\` — Dónde cae el precio de hoy contra su historia
+▸ \`/mbot carry soja\` — Vender hoy o guardar, con tus costos
 
 *✨ Frases:*
 ▸ \`/mbot phrase\` — Una frase ahora (una cada 12 h)
@@ -585,6 +610,7 @@ async function handleCommand(message, client) {
     // funcionar igual: la pizarra, el menú, el alta/baja y el botón de pánico.
     const SOLO_MERCADO_OK = [
       "/mbot mercado", "/mbot frases", "/mbot alerta", "/mbot alertas",
+      "/mbot precio", "/mbot carry",
       "/mbot help", "/mbot add", "/mbot remove", "/mbot stop", "/mbot sync",
     ];
     if (!esChatPrivado(message) && !db.isPhrasesEnabled(groupId) &&
@@ -935,6 +961,129 @@ async function handleCommand(message, client) {
 
     if (!subcommand) {
       return message.reply('❓ ¡Me dejaste por la mitad! Usá `/mbot help` para ver cómo pedirme las cosas.');
+    }
+
+    // --- precio: dónde cae el de hoy contra su propia historia ---
+    // Descriptivo, nunca predictivo: promedios, mínimo y máximo, y en qué
+    // percentil del último año cae hoy. Ni tendencias ni proyecciones: con
+    // una serie de precios spot se fabrican señales que suenan seguras y no
+    // valen nada.
+    if (subcommand === "precio" || subcommand === "carry") {
+      // Mismo criterio que la cotización: donde la pizarra está apagada,
+      // esto tampoco corresponde.
+      if (!esChatPrivado(message) && !db.isMarketEnabled(groupId)) {
+        return message.reply("🔕 La pizarra de granos está apagada en este equipo.\n\n_Un admin puede prenderla con_ `/mbot mercado on`.");
+      }
+
+      // /mbot carry costos <almacenaje> <tasa>
+      if (subcommand === "carry" && (arg === "costos" || arg === "costo")) {
+        const almacenaje = Number(String(parts[3] || "").replace(",", "."));
+        const tasa = Number(String(parts[4] || "").replace(",", "."));
+
+        if (!Number.isFinite(almacenaje) || almacenaje < 0 || almacenaje > 50 ||
+            !Number.isFinite(tasa) || tasa < 0 || tasa > 100) {
+          return message.reply(
+            "⚙️ *Supuestos del carry*\n\n" +
+            "`/mbot carry costos <almacenaje> <tasa>`\n\n" +
+            "▸ *Almacenaje*: lo que te cuesta tener una tonelada guardada un mes, en dólares. La tarifa del acopio, o lo que te sale la silobolsa prorrateada." + `\n` +
+            "▸ *Tasa*: el costo anual del dinero que no cobrás mientras no vendés, en dólares." + `\n\n` +
+            "Ejemplo: `/mbot carry costos 3 8` = US$ 3/t por mes y 8% anual." + `\n\n` +
+            "_Son tus números, no hay default: el que tiene silo propio y el que alquila tienen respuestas distintas y las dos están bien._"
+          );
+        }
+
+        if (!(await puedeConfigurar(message, client))) {
+          return message.reply("🔒 ¡Alto ahí! Solo los administradores del equipo pueden cambiar esto.");
+        }
+
+        db.setCarryCostos(groupId, almacenaje, tasa);
+        return message.reply(
+          `⚙️ Anotado: almacenaje *US$ ${almacenaje}/t/mes* y costo del dinero *${tasa}% anual* en dólares.` +
+          `\n\nAhora podés pedir \`/mbot carry soja\` (o trigo, o maíz).`
+        );
+      }
+
+      const grano = alertas.parsearGrano(arg);
+      if (!grano) {
+        return message.reply(
+          subcommand === "precio"
+            ? "📊 `/mbot precio <grano>` — dónde cae el precio de hoy contra su historia." + `\n\n` + "Granos: trigo, soja, maíz, sorgo, girasol."
+            : "🚜 `/mbot carry <grano>` — vender hoy o guardar, con los números a la vista." + `\n\n` + "Granos con futuros: soja, trigo, maíz." + `\n` + "Configurar tus costos: `/mbot carry costos <almacenaje> <tasa>`"
+        );
+      }
+
+      const hoyISO = hoyArgentinaISO();
+
+      if (subcommand === "precio") {
+        try {
+          const serie = await matba.getHistoria(grano, desdeDosAnios(hoyISO), hoyISO);
+          if (!serie.length) {
+            return message.reply(`⚠️ No conseguí historia de ${alertas.nombreGrano(grano)} ahora mismo. Probá en un rato.`);
+          }
+          return message.reply(carry.mensajeComparacion(grano, serie));
+        } catch (error) {
+          console.error("❌ Error leyendo la historia de Matba Rofex:", error.message);
+          return message.reply("⚠️ No pude leer la historia del mercado ahora mismo. Probá de nuevo en un rato.");
+        }
+      }
+
+      // --- carry ---
+      if (!matba.tieneFuturos(grano)) {
+        return message.reply(
+          `📉 *${alertas.nombreGrano(grano)}* no cotiza a término en Matba Rofex, así que no hay futuro contra el cual comparar y el carry no se puede calcular.` +
+          `\n\n_Con futuros: soja, trigo y maíz._`
+        );
+      }
+
+      const costos = db.getCarryCostos(groupId);
+      if (!costos) {
+        return message.reply(
+          "⚙️ Antes de calcular el carry necesito *tus* dos números:" + `\n\n` +
+          "▸ *Almacenaje* — lo que te cuesta tener una tonelada guardada un mes, en dólares." + `\n` +
+          "▸ *Tasa* — el costo anual del dinero que no cobrás mientras no vendés, en dólares." + `\n\n` +
+          "`/mbot carry costos 3 8`  _(US$ 3/t por mes, 8% anual)_" + `\n\n` +
+          "_No pongo valores por defecto a propósito: el que tiene silo propio y el que alquila en el acopio tienen respuestas opuestas, y las dos son correctas._"
+        );
+      }
+
+      try {
+        const [disponible, posiciones] = await Promise.all([
+          matba.getDisponible(grano, hoyISO),
+          matba.getFuturos(grano, hoyISO),
+        ]);
+
+        if (!disponible.usd || !posiciones.length) {
+          return message.reply(
+            `⚠️ No conseguí la rueda de hoy de ${alertas.nombreGrano(grano)} (puede que todavía no haya cerrado, o que sea un día sin operaciones). Probá más tarde.`
+          );
+        }
+
+        // Solo las posiciones con interés abierto de verdad: las de dos
+        // contratos tienen precio publicado pero no son un mercado.
+        const liquidas = posiciones.filter((p) => p.interesAbierto >= 100).slice(0, 4);
+        const elegidas = liquidas.length ? liquidas : posiciones.slice(0, 3);
+
+        let dolar = null;
+        try {
+          const { getMercado } = require("./mercado");
+          dolar = (await getMercado())?.dolar?.venta ?? null;
+        } catch (e) { /* la conversión a pesos es opcional */ }
+
+        return message.reply(
+          carry.mensajeCarry(grano, {
+            spotUsd: disponible.usd,
+            spotArs: disponible.ars,
+            posiciones: elegidas,
+            almacenajeMes: costos.almacenajeMes,
+            tasaAnual: costos.tasaAnual,
+            fecha: hoyISO,
+            dolar,
+          })
+        );
+      } catch (error) {
+        console.error("❌ Error calculando el carry:", error.message);
+        return message.reply("⚠️ No pude leer los futuros ahora mismo. Probá de nuevo en un rato.");
+      }
     }
 
     // --- alertas de precio ---
