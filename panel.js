@@ -4,6 +4,8 @@
 // ordena solo por id de alta, así dar de baja un grupo no renumera al resto.
 const db = require("./database");
 const { getMercado } = require("./mercado");
+const historia = require("./historia");
+const alertasMod = require("./alertas");
 
 const AYUDA = `
 🛠️ *Panel de MotiBot* — solo super admins
@@ -33,6 +35,7 @@ _Los admins de cada grupo también lo manejan con_ \`/mbot frases on|off\`_._
 ▸ \`/admin mercado ver\` — previsualizar la cotización acá, sin mandarla
 ▸ \`/admin mercado ya <n>\` — mandarla al grupo n ahora mismo
 ▸ \`/admin mercado hora <n> <HH:MM>\` — a partir de qué hora esperar la pizarra
+▸ \`/admin historia\` — ver la serie de precios guardada (y recargarla)
 
 _Los admins de cada grupo también la prenden con_ \`/mbot mercado on|off\`_._
 
@@ -304,6 +307,43 @@ async function comandoFrases(message, partes) {
   );
 }
 
+// Estado de la serie de precios guardada. Sirve para saber si el backfill
+// corrió y si la puesta al día diaria está entrando.
+async function comandoHistoria(message, partes) {
+  const accion = (partes[0] || "").toLowerCase();
+
+  if (accion === "cargar" || accion === "backfill") {
+    await message.reply(`\u{1F4DA} Traigo la historia de Matba Rofex (${historia.ANIOS_BACKFILL} años). Puede tardar un minuto...`);
+    const hoy = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Argentina/Buenos_Aires",
+      year: "numeric", month: "2-digit", day: "2-digit",
+    }).format(new Date());
+
+    const res = await historia.backfill(hoy);
+    const lineas = res.map(
+      (r) => `${alertasMod.emojiGrano(r.codigo)} ${alertasMod.nombreGrano(r.codigo)}: ${r.ruedas} ruedas${r.error ? " \u26a0\ufe0f" : ""}`
+    );
+    return message.reply(`\u{1F4DA} *Carga terminada*\n\n${lineas.join("\n")}`);
+  }
+
+  const resumen = db.resumenMatba();
+  if (!resumen.length) {
+    return message.reply(
+      "\u{1F4DA} Todavía no hay historia de precios guardada.\n\n_Traerla ahora:_ `/admin historia cargar`"
+    );
+  }
+
+  const lineas = resumen.map(
+    (r) => `${alertasMod.emojiGrano(r.producto)} *${alertasMod.nombreGrano(r.producto)}* — ${r.ruedas} ruedas\n     _${r.desde} a ${r.hasta}_`
+  );
+
+  return message.reply(
+    `\u{1F4DA} *Historia de precios guardada*\n\n${lineas.join("\n\n")}\n\n` +
+    `_Fuente: Matba Rofex. Se pone al día sola cuando cierra la rueda._\n` +
+    `_Recargar todo:_ \`/admin historia cargar\``
+  );
+}
+
 // ─── MERCADO ──────────────────────────────────────────────────────────────────
 async function comandoMercado(message, client, partes) {
   const accion = (partes[0] || "").toLowerCase();
@@ -421,6 +461,7 @@ async function handleAdminPanel(message, client) {
   }
 
   if (sub === "frases" || sub === "frase") return comandoFrases(message, partes.slice(2));
+  if (sub === "historia") return comandoHistoria(message, partes.slice(2));
   if (sub === "mercado") return comandoMercado(message, client, partes.slice(2));
 
   return message.reply(`❓ No conozco \`/admin ${sub}\`.\n\n${AYUDA}`);
