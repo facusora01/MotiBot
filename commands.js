@@ -105,8 +105,6 @@ _💡 Tip: en vez de \`/mbot\` también podés arrobarme: \`@MotiBot phrase\`, \
 // grupo donde el mercado esté habilitado. El único lugar donde se listan es el
 // help que pide el super admin desde su chat privado.
 const HELP_SECRETO = `
-
-━━━━━━━━━━━━━━━━━━━━
 🔐 *Comandos reservados* _(solo vos)_
 
 *🌾 Mercado de granos:*
@@ -115,6 +113,8 @@ const HELP_SECRETO = `
 *🚨 Emergencia:*
 ▸ \`/mbot stop\` — Apagar motibot y el túnel (se vuelve a levantar por SSH)
 ▸ \`/mbot sync\` — Sincronización global de grupos`;
+
+const SEPARADOR = "━━━━━━━━━━━━━━━━━━━━";
 
 // Antes estos comandos cortaban en silencio si el chat no estaba registrado, y
 // el bot parecía colgado: leía el comando y no contestaba nada. Ahora avisan.
@@ -852,11 +852,18 @@ async function handleCommand(message, client) {
 
     // ─── PROCESAMIENTO DE COMANDOS VALIDADOS ──────────────────────────────────
     if (subcommand === "help") {
-      // El manual completo (reservados + panel) sale únicamente en el privado
+      // El manual completo (panel + reservados) sale únicamente en el privado
       // del super admin: en un grupo se ve el mismo help que ve cualquiera,
       // aunque quien lo pida sea él.
+      //
+      // Va PRIMERO lo que solo puede hacer él y último el menú común: son ~2700
+      // caracteres y WhatsApp corta con "Leer más", así que lo que quedaba al
+      // final (el panel, justamente) no se veía sin desplegar el mensaje.
       if (esChatPrivado(message) && (await esSuperAdmin(message))) {
-        return message.reply(`${HELP_TEXT}${HELP_SECRETO}\n\n━━━━━━━━━━━━━━━━━━━━\n${AYUDA_PANEL}`);
+        return message.reply(
+          `${AYUDA_PANEL}\n\n${SEPARADOR}\n${HELP_SECRETO}\n\n${SEPARADOR}\n` +
+          `_Y el menú que ve todo el mundo:_\n\n${HELP_TEXT}`
+        );
       }
       return message.reply(HELP_TEXT);
     }
