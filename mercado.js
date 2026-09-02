@@ -88,16 +88,30 @@ function pesos(n, decimales = 0) {
   return n.toLocaleString("es-AR", { minimumFractionDigits: decimales, maximumFractionDigits: decimales });
 }
 
-function flecha(dif) {
-  if (dif > 0) return `🔼 +${pesos(dif)}`;
-  if (dif < 0) return `🔻 ${pesos(dif)}`;
-  return "➖ sin cambios";
+// El feed trae `dif` en PESOS contra la rueda anterior, no en porcentaje. Ese
+// número solo (un "-5.714" al lado de un "352.000") no se entiende, así que
+// mostramos el porcentaje primero — que es lo que se lee de un vistazo — y los
+// pesos entre paréntesis.
+function variacion(importe, dif) {
+  if (!dif) return "➖ sin cambios";
+
+  const flecha = dif > 0 ? "🔼" : "🔻";
+  const signo = dif > 0 ? "+" : "-";
+  const enPesos = `${signo}$ ${pesos(Math.abs(dif))}`;
+
+  // El porcentaje va sobre el valor ANTERIOR (importe - dif), que es contra lo
+  // que se midió el cambio; dividir por el de hoy daría un número distinto.
+  const previo = importe - dif;
+  if (!previo || previo <= 0) return `${flecha} ${enPesos}`;
+
+  const pct = (dif / previo) * 100;
+  return `${flecha} ${signo}${pesos(Math.abs(pct), 2)}%  (${enPesos})`;
 }
 
 function formatearMercado({ fecha, granos, dolar }) {
   const lineas = granos.map((g) => {
     const puerto = g.puerto ? ` _(${g.puerto})_` : "";
-    return `${g.emoji} *${g.nombre}*${puerto}\n    $ ${pesos(g.importe)}  ·  ${flecha(g.dif)}`;
+    return `${g.emoji} *${g.nombre}*${puerto}\n    $ ${pesos(g.importe)}\n    ${variacion(g.importe, g.dif)}`;
   });
 
   let texto =
@@ -111,7 +125,9 @@ function formatearMercado({ fecha, granos, dolar }) {
       `    Compra $ ${pesos(dolar.compra, 2)}  ·  Venta $ ${pesos(dolar.venta, 2)}\n`;
   }
 
-  texto += `\n_Valores por tonelada, en pesos. Fuente: pizarra ACAbase._`;
+  texto +=
+    `\n_Valores por tonelada, en pesos. La variación es contra la rueda anterior._\n` +
+    `_Fuente: pizarra ACAbase (Rosario)._`;
   return texto;
 }
 
