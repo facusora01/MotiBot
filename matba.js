@@ -151,15 +151,42 @@ function nombrePosicion(pos) {
   return `${MESES_LARGO[pos.mes - 1]} ${pos.anio}`;
 }
 
-// Curva de futuros del día, ya ordenada por vencimiento y sin las posiciones
-// vencidas. Solo las que tienen interés abierto: una posición sin nadie del
-// otro lado tiene precio publicado pero no es un precio al que se pueda operar.
+// Cuántos días para atrás buscamos el último cierre. La rueda del día cierra
+// cerca de las 15 hs: pedir estrictamente "hoy" dejaba los comandos inservibles
+// toda la mañana, y encima el finde y los feriados. Diez días cubre cualquier
+// fin de semana largo.
+const DIAS_ATRAS = 10;
+
+function restarDias(iso, dias) {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - dias);
+  return d.toISOString().slice(0, 10);
+}
+
+// Curva de futuros del último cierre disponible, ordenada por vencimiento y sin
+// las posiciones vencidas. Solo las que tienen interés abierto: una posición sin
+// nadie del otro lado tiene precio publicado pero no es un precio operable.
+//
+// Devuelve también la fecha de esa rueda: quien la muestre tiene que decir de
+// cuándo son los precios, no dar a entender que son de hoy.
 async function getFuturos(codigo, hoyISO) {
   const prod = PRODUCTOS[codigo];
   if (!prod?.fut) return [];
 
-  const filas = soloRosario(await pedirTodo({ product: prod.fut, from: hoyISO, to: hoyISO }));
-  const hoy = new Date(`${hoyISO}T00:00:00Z`);
+  const todas = soloRosario(
+    await pedirTodo({ product: prod.fut, from: restarDias(hoyISO, DIAS_ATRAS), to: hoyISO })
+  );
+  if (!todas.length) return [];
+
+  // Nos quedamos con la rueda más reciente que haya: mezclar cierres de días
+  // distintos daría una curva que nunca existió.
+  const ultima = todas.reduce((max, f) => {
+    const d = aISO(f.dateTime);
+    return d > max ? d : max;
+  }, "");
+  const filas = todas.filter((f) => aISO(f.dateTime) === ultima);
+
+  const hoy = new Date(`${ultima}T00:00:00Z`);
 
   return filas
     .map((f) => {
@@ -174,6 +201,7 @@ async function getFuturos(codigo, hoyISO) {
       return {
         symbol: f.symbol,
         nombre: nombrePosicion(pos),
+        rueda: ultima,
         precio,
         interesAbierto: Number(f.openInterest) || 0,
         volumen: Number(f.volume) || 0,
@@ -188,17 +216,25 @@ async function getFuturos(codigo, hoyISO) {
     .sort((a, b) => a.vence - b.vence);
 }
 
-// Disponible del día en las dos monedas.
+// Disponible del último cierre en las dos monedas, con la fecha de esa rueda.
 async function getDisponible(codigo, hoyISO) {
   const prod = PRODUCTOS[codigo];
-  if (!prod) return { usd: null, ars: null };
+  if (!prod) return { usd: null, ars: null, rueda: null };
 
+  const desde = restarDias(hoyISO, DIAS_ATRAS);
   const [usd, ars] = await Promise.all([
-    serie(prod.usd, hoyISO, hoyISO),
-    serie(prod.ars, hoyISO, hoyISO),
+    serie(prod.usd, desde, hoyISO),
+    serie(prod.ars, desde, hoyISO),
   ]);
 
-  return { usd: usd.at(-1)?.valor ?? null, ars: ars.at(-1)?.valor ?? null };
+  const ultimoUsd = usd.at(-1);
+  const ultimoArs = ars.at(-1);
+
+  return {
+    usd: ultimoUsd?.valor ?? null,
+    ars: ultimoArs?.valor ?? null,
+    rueda: ultimoUsd?.fecha || ultimoArs?.fecha || null,
+  };
 }
 
 module.exports = { getHistoria, getFuturos, getDisponible, tieneFuturos, PRODUCTOS };
