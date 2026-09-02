@@ -18,6 +18,13 @@ const AYUDA = `
 ▸ \`/admin borrar bajas\` — borrar todos los que estén dados de baja
 ▸ \`/admin decir <n> <texto>\` — mandar un mensaje al grupo
 
+*🚜 Modo del grupo*
+▸ \`/admin frases off <n>\` — solo mercado: apaga frases, cumples e ideas
+▸ \`/admin frases on <n>\` — volver al MotiBot completo
+▸ \`/admin frases\` — ver qué grupos están en solo mercado
+
+_Los admins de cada grupo también lo manejan con_ \`/mbot frases on|off\`_._
+
 *🌾 Mercado de granos* _(la pizarra diaria)_
 ▸ \`/admin mercado on <n>\` — *prenderlo en el grupo n*
 ▸ \`/admin mercado off <n>\` — apagarlo ahí
@@ -26,6 +33,8 @@ const AYUDA = `
 ▸ \`/admin mercado ver\` — previsualizar la cotización acá, sin mandarla
 ▸ \`/admin mercado ya <n>\` — mandarla al grupo n ahora mismo
 ▸ \`/admin mercado hora <n> <HH:MM>\` — a partir de qué hora esperar la pizarra
+
+_Los admins de cada grupo también la prenden con_ \`/mbot mercado on|off\`_._
 
 _El \`<n>\` es el número que le toca al grupo en \`/admin grupos\`._
 _Ejemplo: \`/admin grupos\` y después \`/admin mercado on 2\`._
@@ -61,7 +70,14 @@ function lineaGrupo(g, i) {
   const s = db.getGroupSettings(g.group_id);
   const estado = g.active ? "🟢" : "⚪";
   const mercado = s?.market_enabled ? ` · 🌾 ${fmtHora(s.market_time)}` : "";
-  return `*${i + 1}.* ${estado} ${g.group_name || "(sin nombre)"}\n     _${s?.send_time || "08:00"} hs · ${s?.frequency || 1}x/día${mercado}_`;
+
+  // En modo solo mercado la hora y la frecuencia de las frases no significan
+  // nada: mostrarlas confundiria.
+  const detalle = db.isPhrasesEnabled(g.group_id)
+    ? `${s?.send_time || "08:00"} hs · ${s?.frequency || 1}x/día${mercado}`
+    : `🚜 solo mercado${mercado}`;
+
+  return `*${i + 1}.* ${estado} ${g.group_name || "(sin nombre)"}\n     _${detalle}_`;
 }
 
 async function comandoGrupos(message) {
@@ -76,7 +92,7 @@ async function comandoGrupos(message) {
   return message.reply(
     `📋 *Grupos de MotiBot* (${activos} activo${activos === 1 ? "" : "s"} de ${grupos.length})\n\n` +
     `${lineas.join("\n\n")}\n\n` +
-    `_🟢 activo · ⚪ dado de baja · 🌾 mercado de granos_\n` +
+    `_🟢 activo · ⚪ dado de baja · 🌾 mercado · 🚜 solo mercado_\n` +
     `Detalle: \`/admin info <n>\``
   );
 }
@@ -95,6 +111,7 @@ async function comandoInfo(message, arg) {
     `📍 *${grupo.group_name || "(sin nombre)"}*\n\n` +
     `Estado: ${grupo.active ? "🟢 activo" : "⚪ dado de baja"}\n` +
     `Idioma: ${s?.language === "en" ? "Inglés 🇬🇧" : "Español 🇦🇷"}\n` +
+    `Modo: ${db.isPhrasesEnabled(grupo.group_id) ? "MotiBot completo" : "🚜 solo mercado"}\n` +
     `Horario: ${s?.send_time || "08:00"} hs · ${s?.frequency || 1} vez/día\n` +
     `Librería custom: ${custom}\n` +
     `Frases: ${db.countCustomPhrases(grupo.group_id)}\n` +
@@ -239,6 +256,54 @@ async function comandoDecir(message, client, arg, texto) {
   return message.reply(`✅ Enviado a *${grupo.group_name}*.`);
 }
 
+// Modo solo mercado: apagar las frases deja al grupo con la pizarra y nada más
+// (ni frase diaria, ni cumples, ni ideas, y MotiBot ignora esos comandos ahí).
+async function comandoFrases(message, partes) {
+  const accion = (partes[0] || "").toLowerCase();
+
+  if (accion !== "on" && accion !== "off") {
+    const grupos = listarGrupos()
+      .map((g, i) => ({ g, i }))
+      .filter((x) => !db.isPhrasesEnabled(x.g.group_id));
+
+    const detalle = grupos.length
+      ? grupos.map((x) => `*${x.i + 1}.* ${x.g.active ? "🟢" : "⚪"} ${x.g.group_name}`).join("\n")
+      : "_Todos los grupos tienen las frases prendidas._";
+
+    return message.reply(
+      `🚜 *Grupos en modo solo mercado*\n\n${detalle}\n\n` +
+      `Apagar las frases en un grupo: \`/admin frases off <n>\`\n` +
+      `Volver a prenderlas: \`/admin frases on <n>\``
+    );
+  }
+
+  const encender = accion === "on";
+  const { grupo, n, error } = resolverGrupo(partes[1]);
+  if (error) return message.reply(error);
+
+  db.setPhrasesEnabled(grupo.group_id, encender);
+
+  if (encender) {
+    const s = db.getGroupSettings(grupo.group_id);
+    return message.reply(
+      `✅ Frases *prendidas* en *${grupo.group_name}*.\n\n` +
+      `Vuelve todo: frase diaria a las ${s?.send_time || "08:00"} hs, cumpleaños, ideas y los comandos de siempre.`
+    );
+  }
+
+  // Sin mercado ni frases el bot queda mudo en ese grupo: mejor decirlo ahora
+  // que dejarlo descubrir que MotiBot dejó de existir ahí.
+  const aviso = db.isMarketEnabled(grupo.group_id)
+    ? `Sigue mandando la pizarra de granos a las ${fmtHora(db.getGroupSettings(grupo.group_id)?.market_time)} hs.`
+    : `⚠️ *Ojo:* ese grupo tampoco tiene el mercado activado, así que ahí no voy a hacer nada.\nPrendelo con \`/admin mercado on ${n}\`.`;
+
+  return message.reply(
+    `🚜 *${grupo.group_name}* pasa a *modo solo mercado*.\n\n` +
+    `Se apagan la frase diaria, los cumpleaños, las ideas y todos esos comandos: si alguien los usa ahí, ni contesto.\n\n` +
+    `${aviso}\n\n_Para revertirlo:_ \`/admin frases on ${n}\``
+  );
+}
+
 // ─── MERCADO ──────────────────────────────────────────────────────────────────
 async function comandoMercado(message, client, partes) {
   const accion = (partes[0] || "").toLowerCase();
@@ -355,6 +420,7 @@ async function handleAdminPanel(message, client) {
     return comandoDecir(message, client, partes[2], m ? m[2] : "");
   }
 
+  if (sub === "frases" || sub === "frase") return comandoFrases(message, partes.slice(2));
   if (sub === "mercado") return comandoMercado(message, client, partes.slice(2));
 
   return message.reply(`❓ No conozco \`/admin ${sub}\`.\n\n${AYUDA}`);

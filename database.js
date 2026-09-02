@@ -25,6 +25,7 @@ db.exec(`
     custom_start_date    DATETIME,
     send_time            TEXT DEFAULT '08:00',
     frequency            INTEGER DEFAULT 1,
+    phrases_enabled      INTEGER DEFAULT 1,
     market_enabled       INTEGER DEFAULT 0,
     market_time          TEXT DEFAULT '09:00',
     market_last_sent     TEXT,
@@ -94,6 +95,14 @@ db.exec(`
 // ─── MIGRACIONES AUTOMÁTICAS ──────────────────────────────────────────────────
 try {
   db.exec(`ALTER TABLE group_settings ADD COLUMN frequency INTEGER DEFAULT 1`);
+} catch (e) {}
+
+// Modo "solo mercado": apagando phrases_enabled el grupo deja de recibir la
+// frase diaria y los saludos de cumple, y MotiBot ignora ahi todo lo que no sea
+// la pizarra. Default 1 para que los grupos que ya existen sigan igual.
+try {
+  db.exec(`ALTER TABLE group_settings ADD COLUMN phrases_enabled INTEGER DEFAULT 1`);
+  console.log("🔧 Migración: Columna 'phrases_enabled' lista.");
 } catch (e) {}
 
 // Mercado de granos: opt-in por grupo, lo habilita el super admin desde su
@@ -518,7 +527,25 @@ function aplicarVotosDePoll(groupId, pollMsgId, votos) {
   return aplicar();
 }
 
+// --- MODO SOLO MERCADO -------------------------------------------------------
+// Sin fila en group_settings el default es "prendido": un grupo que todavia no
+// se configuro tiene que comportarse como siempre.
+function isPhrasesEnabled(groupId) {
+  const row = db.prepare(`SELECT phrases_enabled FROM group_settings WHERE group_id = ?`).get(groupId);
+  if (!row) return true;
+  return row.phrases_enabled !== 0;
+}
+
+function setPhrasesEnabled(groupId, enabled) {
+  db.prepare(`INSERT OR IGNORE INTO group_settings (group_id) VALUES (?)`).run(groupId);
+  const info = db.prepare(`UPDATE group_settings SET phrases_enabled = ? WHERE group_id = ?`)
+    .run(enabled ? 1 : 0, groupId);
+  return info.changes > 0;
+}
+
 // --- MERCADO DE GRANOS -------------------------------------------------------
+// La prende quien quiera: un admin del grupo con /mbot mercado on, o el super
+// admin desde su panel. No hay un permiso aparte que haya que dar antes.
 function setMarketEnabled(groupId, enabled) {
   db.prepare(`INSERT OR IGNORE INTO group_settings (group_id) VALUES (?)`).run(groupId);
   const info = db.prepare(`UPDATE group_settings SET market_enabled = ? WHERE group_id = ?`)
@@ -552,6 +579,8 @@ function markMarketSent(groupId, hoyISO) {
 
 module.exports = {
   addGroup,
+  isPhrasesEnabled,
+  setPhrasesEnabled,
   getAllGroups,
   reactivateGroup,
   deleteGroupCompleto,

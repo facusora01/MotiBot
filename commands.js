@@ -77,6 +77,8 @@ Acá tenés todo lo que puedo hacer por vos y tu equipo:
 ▸ \`/mbot freq <1-6>\` — Ajustar cuántas veces paso por día
 ▸ \`/mbot use custom\` — Iniciar transición a frases del equipo
 ▸ \`/mbot use default\` — Volver a las frases clásicas
+▸ \`/mbot frases on|off\` — Prender o apagar las frases, cumples e ideas
+▸ \`/mbot mercado on|off\` — Prender o apagar la pizarra de granos diaria
 
 *📚 Gestión de Frases:*
 ▸ \`/new "Frase" - Autor\` — Sumar a la colección
@@ -93,6 +95,9 @@ Acá tenés todo lo que puedo hacer por vos y tu equipo:
 ▸ \`/ideas\` — Ver el listado y votar reaccionando con emojis
 ▸ \`/ideas list\` — 🌐 Panel Web con todas las ideas y sus votos (admins)
 
+*🚜 Mercado de granos:*
+▸ \`/mbot mercado\` — Cotización del día (trigo, soja, maíz, sorgo y girasol)
+
 *💡 Información y Ansiedad:*
 ▸ \`/mbot time\` — ⏳ Cuenta regresiva para activación de librería custom
 ▸ \`/mbot status\` — Ver reporte detallado de configuración
@@ -107,14 +112,26 @@ _💡 Tip: en vez de \`/mbot\` también podés arrobarme: \`@MotiBot phrase\`, \
 const HELP_SECRETO = `
 🔐 *Comandos reservados* _(solo vos)_
 
-*🌾 Mercado de granos:*
-▸ \`/mbot mercado\` — Cotización de la pizarra, en los grupos donde lo habilitaste
-
 *🚨 Emergencia:*
 ▸ \`/mbot stop\` — Apagar motibot y el túnel (se vuelve a levantar por SSH)
 ▸ \`/mbot sync\` — Sincronización global de grupos`;
 
 const SEPARADOR = "━━━━━━━━━━━━━━━━━━━━";
+
+// Menú de un grupo en modo solo mercado: mostrarle el HELP_TEXT completo sería
+// ofrecerle comandos que ahí no responden.
+const HELP_SOLO_MERCADO = `
+🚜 *MotiBot — Mercado de granos* 🌾
+
+En este equipo estoy solo para la pizarra de cotizaciones:
+
+▸ \`/mbot mercado\` — Ver la cotización del día
+▸ \`/mbot mercado on|off\` — Prender o apagar la pizarra diaria (admins)
+
+_Todos los días la mando sola, apenas se publica el tablero._
+
+_💡 ¿Quieren además las frases diarias, los cumpleaños y las ideas? Un admin las prende con_ \`/mbot frases on\`_._
+`.trim();
 
 // Antes estos comandos cortaban en silencio si el chat no estaba registrado, y
 // el bot parecía colgado: leía el comando y no contestaba nada. Ahora avisan.
@@ -491,6 +508,21 @@ async function handleCommand(message, client) {
       return handleAdminPanel(message, client);
     }
 
+    // Grupos en modo "solo mercado": el super admin apagó las frases ahí, y
+    // MotiBot deja de atender toda la parte motivacional (frases, cumples,
+    // ideas). No contesta que está apagado ni nada: directamente no escucha,
+    // así en un equipo que solo quiere la pizarra el bot no aparece nunca sin
+    // que lo llamen. Quedan afuera del silencio los comandos que tienen que
+    // funcionar igual: la pizarra, el menú, el alta/baja y el botón de pánico.
+    const SOLO_MERCADO_OK = [
+      "/mbot mercado", "/mbot mercado on", "/mbot mercado off",
+      "/mbot frases", "/mbot frases on", "/mbot frases off",
+      "/mbot help", "/mbot add", "/mbot remove", "/mbot stop", "/mbot sync",
+    ];
+    if (!esChatPrivado(message) && !db.isPhrasesEnabled(groupId) && !SOLO_MERCADO_OK.includes(lowerBody)) {
+      return;
+    }
+
     let group = db.getGroup(groupId);
 
     // 🚨 BOTÓN DE PÁNICO (Solo Sora / Super Admins)
@@ -839,9 +871,10 @@ async function handleCommand(message, client) {
     const UNKNOWN_MSG = `❓ ¡Epa! Ese comando no lo tengo en mi memoria. Usá \`/mbot help\` para ver mi manual de instrucciones.`;
 
     // parts = ["/mbot", subcommand, arg?] → length 2 = sin arg extra, 3 = con arg.
-    const strictNoArg = ["phrase", "status", "help", "add", "remove", "list", "stop", "time", "mercado"];
+    const strictNoArg = ["phrase", "status", "help", "add", "remove", "list", "stop", "time"];
     const needsOneArg = ["lang", "use"];
-    const optionalOneArg = ["clock", "freq"];
+    // mercado y frases: sin argumento consultan, con on/off cambian el estado.
+    const optionalOneArg = ["clock", "freq", "mercado", "frases"];
 
     if (strictNoArg.includes(subcommand) && parts.length !== 2) return message.reply(UNKNOWN_MSG);
     if (needsOneArg.includes(subcommand) && parts.length !== 3) return message.reply(UNKNOWN_MSG);
@@ -865,6 +898,12 @@ async function handleCommand(message, client) {
           `_Y el menú que ve todo el mundo:_\n\n${HELP_TEXT}`
         );
       }
+      // En un grupo solo-mercado, el menú corto: el resto de los comandos ahí
+      // no responden, ofrecerlos sería mentir.
+      if (!esChatPrivado(message) && !db.isPhrasesEnabled(groupId)) {
+        return message.reply(HELP_SOLO_MERCADO);
+      }
+
       return message.reply(HELP_TEXT);
     }
 
@@ -993,18 +1032,93 @@ async function handleCommand(message, client) {
       }
     }
 
-    // --- mercado de granos ---
-    // No pide admin (es solo lectura), pero sí que el super admin lo haya
-    // habilitado en este equipo desde su panel.
-    if (subcommand === "mercado") {
-      // Silencio: donde el super admin no lo habilitó, el comando no existe. Ni
-      // "no está habilitado" contestamos — eso ya revelaría que la función existe
-      // y abriría la puerta a que se la pidan al bot en cada grupo. Va antes que
-      // el chequeo de registro para no delatarlo tampoco por esa vía.
-      if (!db.isMarketEnabled(groupId)) return;
-
+    // --- frases on|off ---
+    // El admin del grupo decide si quiere el MotiBot completo o solo la
+    // pizarra. Sin argumento, dice cómo está.
+    if (subcommand === "frases") {
       const group = db.getGroup(groupId);
-      if (!group || !group.active) return;
+      if (!group || !group.active) return message.reply(NO_REGISTRADO);
+
+      const prendidas = db.isPhrasesEnabled(groupId);
+
+      if (!arg) {
+        return message.reply(
+          prendidas
+            ? "✨ Las frases están *prendidas*: paso todos los días con una frase, saludo los cumpleaños y atiendo las ideas.\n\n_Para dejar solo el mercado de granos:_ `/mbot frases off`"
+            : "🚜 Estoy en *modo solo mercado*: no mando frases ni saludo cumpleaños.\n\n_Para volver al MotiBot completo:_ `/mbot frases on`"
+        );
+      }
+
+      if (arg !== "on" && arg !== "off") {
+        return message.reply("❌ Usá `/mbot frases on` o `/mbot frases off`.");
+      }
+
+      const adminStatus = await isAdmin(message, client);
+      if (!adminStatus) {
+        return message.reply("🔒 ¡Alto ahí! Solo los administradores del equipo pueden cambiar esto.");
+      }
+
+      const encender = arg === "on";
+      if (encender === prendidas) {
+        return message.reply(encender ? "ℹ️ Las frases ya estaban prendidas." : "ℹ️ Ya estaba en modo solo mercado.");
+      }
+
+      db.setPhrasesEnabled(groupId, encender);
+
+      if (encender) {
+        const settings = db.getGroupSettings(groupId);
+        return message.reply(
+          `✨ *¡Volví completo!*\n\nPaso todos los días a las ${settings?.send_time || "08:00"} hs con una frase, saludo los cumpleaños y escucho sus ideas.\n\nMenú: \`/mbot help\``
+        );
+      }
+
+      // Si tampoco hay mercado, el grupo se queda sin nada: hay que decirlo.
+      const conMercado = db.isMarketEnabled(groupId);
+      return message.reply(
+        `🚜 *Modo solo mercado activado.*\n\n` +
+        `Dejo de mandar la frase diaria, los cumpleaños y las ideas, y no respondo esos comandos.\n\n` +
+        (conMercado
+          ? `Sigo con la pizarra de granos de todos los días.`
+          : `⚠️ Ojo: acá tampoco está prendido el mercado, así que no voy a hacer nada. Prendelo con \`/mbot mercado on\`.`) +
+        `\n\n_Para volver atrás:_ \`/mbot frases on\``
+      );
+    }
+
+    // --- mercado de granos ---
+    // Sin argumento devuelve la cotización; con on/off un admin del grupo
+    // prende o apaga la pizarra diaria. No hace falta que el super admin
+    // autorice nada antes: quien la prende, la habilita.
+    if (subcommand === "mercado") {
+      const group = db.getGroup(groupId);
+      if (!group || !group.active) return message.reply(NO_REGISTRADO);
+
+      if (arg === "on" || arg === "off") {
+        const adminStatus = await isAdmin(message, client);
+        if (!adminStatus) {
+          return message.reply("🔒 ¡Alto ahí! Solo los administradores del equipo pueden cambiar esto.");
+        }
+
+        const encender = arg === "on";
+        if (encender === db.isMarketEnabled(groupId)) {
+          return message.reply(encender ? "ℹ️ La pizarra ya estaba prendida." : "ℹ️ La pizarra ya estaba apagada.");
+        }
+
+        db.setMarketEnabled(groupId, encender);
+        const settings = db.getGroupSettings(groupId);
+
+        return message.reply(
+          encender
+            ? `🚜 *Pizarra de granos activada.*\n\nTodos los días les paso la cotización, apenas se publica el tablero (no antes de las ${settings?.market_time || "09:00"} hs).\n\n_Verla ahora:_ \`/mbot mercado\``
+            : `🔕 Listo, no mando más la cotización diaria.\n\n_Para volver a prenderla:_ \`/mbot mercado on\``
+        );
+      }
+
+      if (arg) return message.reply("❌ Usá `/mbot mercado`, `/mbot mercado on` o `/mbot mercado off`.");
+
+      // Sin argumento: la cotización, si la pizarra está prendida en el grupo.
+      if (!db.isMarketEnabled(groupId)) {
+        return message.reply("🔕 La pizarra de granos está apagada en este equipo.\n\n_Un admin puede prenderla con_ `/mbot mercado on`.");
+      }
 
       try {
         const { getMercado } = require("./mercado");
