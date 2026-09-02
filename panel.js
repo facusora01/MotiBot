@@ -14,6 +14,8 @@ const AYUDA = `
 ▸ \`/admin baja <n>\` — dejar de mandar ahí (sigo adentro del grupo)
 ▸ \`/admin alta <n>\` — volver a activarlo
 ▸ \`/admin salir <n>\` — irme del grupo de WhatsApp (pide confirmación)
+▸ \`/admin borrar <n>\` — borrar de la base un grupo dado de baja
+▸ \`/admin borrar bajas\` — borrar todos los que estén dados de baja
 ▸ \`/admin decir <n> <texto>\` — mandar un mensaje al grupo
 
 *🌾 Mercado de granos*
@@ -110,7 +112,7 @@ async function comandoBaja(message, arg) {
   db.removeGroup(grupo.group_id);
   return message.reply(
     `✅ *${grupo.group_name}* dado de baja. No le mando más nada.\n\n` +
-    `_Sigo dentro del grupo de WhatsApp: para irme del todo usá \`/admin salir\`. Para reactivarlo, \`/admin alta\`._`
+    `_Sigo dentro del grupo de WhatsApp: para irme del todo usá \`/admin salir\`. Para reactivarlo, \`/admin alta\`. Para borrarlo de la base, \`/admin borrar\`._`
   );
 }
 
@@ -148,6 +150,73 @@ async function comandoSalir(message, client, arg, confirmacion) {
 
   db.removeGroup(grupo.group_id);
   return message.reply(`👋 Salí de *${grupo.group_name}* y lo di de baja.`);
+}
+
+// Borrado definitivo, y solo sobre grupos ya dados de baja: pedir la baja
+// primero obliga a pasar por un paso reversible antes del que no lo es. Se
+// lleva puestas las frases, los cumples y las ideas del grupo, así que además
+// pide confirmación con el conteo de lo que se pierde a la vista.
+async function comandoBorrar(message, arg, confirmacion) {
+  // `/admin borrar bajas` limpia de una todos los inactivos.
+  if (String(arg || "").toLowerCase() === "bajas") {
+    const bajas = listarGrupos().filter((g) => !g.active);
+    if (!bajas.length) return message.reply("✅ No hay ningún grupo dado de baja para borrar.");
+
+    if (String(confirmacion || "").toLowerCase() !== "confirmar") {
+      const lista = bajas.map((g) => `▸ ${g.group_name || "(sin nombre)"} — ${resumenDatos(g.group_id)}`).join("\n");
+      return message.reply(
+        `⚠️ Voy a borrar *${bajas.length}* grupo${bajas.length === 1 ? "" : "s"} dado${bajas.length === 1 ? "" : "s"} de baja, con todos sus datos:\n\n${lista}\n\n` +
+        `Esto no se puede deshacer. Si estás seguro:\n\`/admin borrar bajas confirmar\``
+      );
+    }
+
+    for (const g of bajas) db.deleteGroupCompleto(g.group_id);
+    console.warn(`🗑️ Borrados ${bajas.length} grupos dados de baja desde el panel.`);
+    return message.reply(
+      `🗑️ Borré ${bajas.length} grupo${bajas.length === 1 ? "" : "s"} y sus datos.\n\n_Los números de \`/admin grupos\` se recorrieron._`
+    );
+  }
+
+  const { grupo, n, error } = resolverGrupo(arg);
+  if (error) return message.reply(error);
+
+  if (grupo.active) {
+    return message.reply(
+      `❌ *${grupo.group_name}* está activo. Solo borro grupos dados de baja.\n\n` +
+      `Si querés eliminarlo, primero:\n\`/admin baja ${n}\``
+    );
+  }
+
+  if (String(confirmacion || "").toLowerCase() !== "confirmar") {
+    return message.reply(
+      `⚠️ Esto borra *${grupo.group_name}* de la base junto con ${resumenDatos(grupo.group_id)}. No se puede deshacer.\n\n` +
+      `Si algún día vuelvo a ese grupo, arranca de cero con \`/mbot add\`.\n\n` +
+      `Si estás seguro:\n\`/admin borrar ${n} confirmar\``
+    );
+  }
+
+  db.deleteGroupCompleto(grupo.group_id);
+  console.warn(`🗑️ Grupo borrado desde el panel: ${grupo.group_name} (${grupo.group_id})`);
+
+  return message.reply(
+    `🗑️ Borré *${grupo.group_name}* y todos sus datos.\n\n_Ojo: los números de \`/admin grupos\` se corrieron._`
+  );
+}
+
+// "12 frases, 3 cumples y 5 ideas" — lo que se pierde con el borrado, para que
+// la confirmación no sea a ciegas.
+function resumenDatos(groupId) {
+  const partes = [
+    [db.countCustomPhrases(groupId), "frase", "frases"],
+    [db.countBirthdays(groupId), "cumple", "cumples"],
+    [db.countIdeas(groupId), "idea", "ideas"],
+  ]
+    .filter(([n]) => n > 0)
+    .map(([n, sing, plur]) => `${n} ${n === 1 ? sing : plur}`);
+
+  if (!partes.length) return "sus datos (no tenía nada cargado)";
+  if (partes.length === 1) return partes[0];
+  return `${partes.slice(0, -1).join(", ")} y ${partes[partes.length - 1]}`;
 }
 
 async function comandoDecir(message, client, arg, texto) {
@@ -273,6 +342,7 @@ async function handleAdminPanel(message, client) {
   if (sub === "baja" || sub === "off") return comandoBaja(message, partes[2]);
   if (sub === "alta" || sub === "on") return comandoAlta(message, partes[2]);
   if (sub === "salir" || sub === "leave") return comandoSalir(message, client, partes[2], partes[3]);
+  if (sub === "borrar" || sub === "delete") return comandoBorrar(message, partes[2], partes[3]);
 
   if (sub === "decir" || sub === "say") {
     // El texto es todo lo que sigue al número, con sus espacios originales
