@@ -705,9 +705,13 @@ async function handleCommand(message, client) {
         if (!empiezaConAlguno(lowerBody, PRIVADO_PREFIJOS)) return;
       }
 
-      // Mientras el super admin no adopte su propio privado con /mbot add, le
-      // damos la frase por la vía corta (sin límite) en vez del "no me adoptaron".
-      if (lowerBody === "/mbot phrase" && !db.getGroup(groupId)?.active) {
+      // La frase por privado sale SIEMPRE del libro clásico, también para el
+      // super admin. La librería custom es de un equipo: las frases las
+      // escribió gente de ese grupo, para ese grupo, y no tienen por qué
+      // aparecer en el chat personal de nadie. Antes esto dependía de si el
+      // privado estaba registrado, y al registrarse (por suscribirse al mercado
+      // o a la frase diaria) empezaba a servir la librería de ese chat.
+      if (lowerBody === "/mbot phrase") {
         return handlePrivateCommand(message);
       }
     }
@@ -748,6 +752,16 @@ async function handleCommand(message, client) {
       if (!SUPER_ADMINS.includes(number)) return;
 
       return detenerEmergencia(message, number);
+    }
+
+    // La colección de frases es de un equipo. Guardarlas en un chat personal
+    // no tiene destinatario —nadie más las va a recibir— y además es lo que
+    // hacía que después salieran por /mbot phrase en ese privado.
+    if (esChatPrivado(message) && (lowerBody.startsWith("/new ") || lowerBody === "/add" || lowerBody.startsWith("/add "))) {
+      return message.reply(
+        "📚 La colección de frases es de cada equipo, así que estos comandos van dentro del grupo.\n\n" +
+        "_Acá te puedo dar una frase cuando quieras con_ \`/mbot phrase\`_._"
+      );
     }
 
     // ── /new "frase" - autor ──────────────────────────────────────────────────

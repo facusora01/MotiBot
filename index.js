@@ -77,7 +77,11 @@ async function sendDailyPhrases(client, specificGroupId = null) {
       let frase;
       let isCustom = false;
 
-      if (settings?.use_custom === "active") {
+      // Un chat personal suscripto a la frase diaria recibe el libro clásico:
+      // la librería custom es del equipo que la escribió.
+      const esGrupo = String(group.group_id).endsWith("@g.us");
+
+      if (esGrupo && settings?.use_custom === "active") {
         const customPhrase = db.getRandomCustomPhrase(group.group_id);
         if (customPhrase) {
           frase = { texto: customPhrase.phrase, autor: customPhrase.author, source: customPhrase.source };
