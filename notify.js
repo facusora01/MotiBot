@@ -20,6 +20,16 @@ function getTransport() {
   });
 }
 
+// ALERT_TO admite varias casillas separadas por coma, y conviene usarlas: este
+// mail es el único aviso de que el bot se cayó, y un solo proveedor que lo
+// filtre lo deja sin llegar. Pasó con Hotmail, que descartó en silencio los que
+// mandaba Gmail.
+function destinatarios() {
+  const crudo = process.env.ALERT_TO || process.env.SMTP_USER || "";
+  const lista = crudo.split(",").map((x) => x.trim()).filter(Boolean);
+  return lista.join(", ");
+}
+
 // Traduce los fallos de SMTP a qué hacer. Sin esto el log deja un código de
 // Google ("535-5.7.8 BadCredentials") y hay que ir a buscar qué significa —
 // justo cuando el bot está caído y el mail era el único aviso.
@@ -52,7 +62,7 @@ function explicarFalla(e) {
 // No tira si falla (solo loguea): un problema de mail no debe tumbar el bot.
 async function alertarRevinculacion(pairUrl) {
   const transport = getTransport();
-  const to = process.env.ALERT_TO || process.env.SMTP_USER;
+  const to = destinatarios();
 
   if (!transport || !to) {
     // Decir CUÁL falta: "faltan SMTP_HOST/USER/PASS" obliga a revisarlas todas.
@@ -81,6 +91,8 @@ async function alertarRevinculacion(pairUrl) {
         `<p>En WhatsApp: <b>Dispositivos vinculados → Vincular con número de teléfono</b> → tipeá el código.</p>` +
         `<p style="color:#888">No hace falta que toques el servidor.</p>`,
     });
+    // Decimos SIEMPRE a quién: "enviada" sin destinatario no distingue entre
+    // que llegó y que se fue a una casilla que no mira nadie.
     console.log(`📧 Alerta de re-vinculación enviada a ${to}`);
     return true;
   } catch (e) {

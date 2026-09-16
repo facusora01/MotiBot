@@ -24,7 +24,12 @@ function estado(nombre, valor, obligatoria = true) {
   console.log(estado("SMTP_PORT", SMTP_PORT, false) + (SMTP_PORT ? ` (${SMTP_PORT})` : " → usa 465"));
   console.log(estado("SMTP_USER", SMTP_USER));
   console.log(estado("SMTP_PASS", SMTP_PASS));
-  console.log(estado("ALERT_TO", ALERT_TO || SMTP_USER));
+  const casillas = (ALERT_TO || SMTP_USER || "").split(",").map((x) => x.trim()).filter(Boolean);
+  console.log(estado("ALERT_TO", casillas.length) + (casillas.length ? `: ${casillas.join(", ")}` : ""));
+  if (casillas.length === 1) {
+    console.log("     💡 Podés poner varias separadas por coma: si un proveedor filtra el aviso,");
+    console.log("        te llega igual por la otra. Es el único mail que avisa que el bot se cayó.");
+  }
   console.log(estado("PAIR_TOKEN", PAIR_TOKEN, false));
 
   const tunel = getTunnelUrl();
@@ -43,7 +48,7 @@ function estado(nombre, valor, obligatoria = true) {
     process.exit(1);
   }
 
-  const destino = ALERT_TO || SMTP_USER;
+  const destino = casillas.join(", ");
   console.log(`\n📧 Mandando el mail de prueba a ${destino}...`);
 
   const pairUrl = tunel ? `${tunel}/pair?key=${PAIR_TOKEN || ""}` : "(sin URL de túnel disponible)";
