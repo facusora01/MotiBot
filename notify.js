@@ -20,6 +20,35 @@ function getTransport() {
   });
 }
 
+// Traduce los fallos de SMTP a qué hacer. Sin esto el log deja un código de
+// Google ("535-5.7.8 BadCredentials") y hay que ir a buscar qué significa —
+// justo cuando el bot está caído y el mail era el único aviso.
+function explicarFalla(e) {
+  const texto = `${e?.code || ""} ${e?.responseCode || ""} ${e?.message || ""}`;
+  const usuario = process.env.SMTP_USER || "(sin SMTP_USER)";
+
+  if (/EAUTH|535|BadCredentials|Username and Password not accepted/i.test(texto)) {
+    console.error(
+      "\n   👉 Google rechazó el usuario o la clave. Casi siempre es una de estas:\n" +
+      `      1. SMTP_PASS tiene la clave de la cuenta. Tiene que ser una *app password*\n` +
+      "         de 16 letras: https://myaccount.google.com/apppasswords\n" +
+      "      2. La cuenta no tiene verificación en 2 pasos activada. Sin eso Google no\n" +
+      "         deja crear app passwords.\n" +
+      "      3. La app password fue revocada o regenerada: hay que crear una nueva.\n" +
+      `      4. SMTP_USER (${usuario}) no es la misma cuenta que generó la app password.\n\n` +
+      "   Después de corregir el .env: pm2 restart motibot && node probar-mail.js\n"
+    );
+    return;
+  }
+
+  if (/ETIMEDOUT|ECONNREFUSED|ENOTFOUND|ESOCKET/i.test(texto)) {
+    console.error(
+      "\n   👉 No se pudo ni conectar al servidor SMTP. Revisá SMTP_HOST y SMTP_PORT\n" +
+      "      (465 con SSL, 587 con STARTTLS), y que el server tenga salida a ese puerto.\n"
+    );
+  }
+}
+
 // No tira si falla (solo loguea): un problema de mail no debe tumbar el bot.
 async function alertarRevinculacion(pairUrl) {
   const transport = getTransport();
@@ -56,6 +85,7 @@ async function alertarRevinculacion(pairUrl) {
     return true;
   } catch (e) {
     console.error("❌ No pude enviar el mail de alerta:", e.message);
+    explicarFalla(e);
     return false;
   }
 }
