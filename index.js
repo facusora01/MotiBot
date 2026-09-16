@@ -926,6 +926,19 @@ process.on('unhandledRejection', (reason, promise) => {
         return;
     }
 
+    // Carrera conocida con whatsapp-web.js al cerrar. Su handler de
+    // 'framenavigated' emite LOGOUT y DESPUÉS, en la misma función, llama a
+    // inject() sobre la página (Client.js:383). Nosotros tomamos ese LOGOUT
+    // como "apagá todo" y destruimos el browser, así que su inject() se queda
+    // sin frame y tira "detached Frame". Es consecuencia de nuestro propio
+    // cierre, no una falla: loguearlo como error no manejado hace pensar que el
+    // bot crasheó cuando en realidad estaba saliendo de forma ordenada.
+    const esRuidoDeCierre = /detached Frame|Target closed|Session closed|Protocol error/i.test(msg);
+    if (esRuidoDeCierre && (cerrando || necesitaAuth)) {
+        console.warn(`⚠️ Puppeteer cortado durante el cierre (esperable): ${msg.split("\n")[0]}`);
+        return;
+    }
+
     console.error('🚨 Error no manejado detectado:', reason);
 });
 
