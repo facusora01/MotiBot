@@ -12,6 +12,11 @@ function getTransport() {
     port,
     secure: port === 465, // 465 = SSL; 587 = STARTTLS
     auth: { user: SMTP_USER, pass: (SMTP_PASS || "").replace(/\s/g, "") }, // Gmail lo copia con espacios
+    // Sin topes, un SMTP que no responde deja el envío colgado para siempre y
+    // con él el cierre del proceso, que ahora lo espera.
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
   });
 }
 
@@ -21,7 +26,10 @@ async function alertarRevinculacion(pairUrl) {
   const to = process.env.ALERT_TO || process.env.SMTP_USER;
 
   if (!transport || !to) {
-    console.warn("⚠️ Alerta NO enviada: faltan SMTP_HOST/USER/PASS o ALERT_TO en el .env.");
+    // Decir CUÁL falta: "faltan SMTP_HOST/USER/PASS" obliga a revisarlas todas.
+    const faltan = ["SMTP_HOST", "SMTP_USER", "SMTP_PASS"].filter((v) => !process.env[v]);
+    if (!to) faltan.push("ALERT_TO (o SMTP_USER)");
+    console.warn(`⚠️ Alerta NO enviada: falta configurar ${faltan.join(", ")} en el .env.`);
     return false;
   }
 

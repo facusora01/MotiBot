@@ -412,13 +412,38 @@ async function pedirPairingCode() {
 // Una alerta por episodio (alertaEnviada resetea en 'ready'). Se llama desde
 // 'qr' Y desde el LOGOUT: si el inject post-logout crashea, 'qr' nunca se
 // emite y sin esto no llegaría ningún mail.
+// Promesa del mail en vuelo. El cierre del proceso la espera: mandar el mail y
+// salir de inmediato mataba el envío a mitad del handshake SMTP, que tarda
+// segundos. Ese era el motivo por el que una desconexión por LOGOUT podía no
+// avisar nunca — justo el caso en el que hace más falta el aviso.
+let alertaEnVuelo = null;
+
 function dispararAlertaRevinculacion() {
   const yaVinculado = estuvoReady || fs.existsSync(LINKED_MARKER);
-  if (!yaVinculado || alertaEnviada) return;
-  alertaEnviada = true;
+  if (!yaVinculado || alertaEnviada || alertaEnVuelo) return alertaEnVuelo || Promise.resolve();
+
   const base = getTunnelUrl();
-  const pairUrl = base ? `${base}/pair?key=${PAIR_TOKEN}` : "(configurá TUNNEL_URL)";
-  alertarRevinculacion(pairUrl);
+  if (!base) {
+    console.warn("⚠️ Sin URL de túnel: el mail va a salir sin link de vinculación.");
+  }
+  const pairUrl = base ? `${base}/pair?key=${PAIR_TOKEN}` : "(sin URL de túnel disponible)";
+
+  alertaEnVuelo = alertarRevinculacion(pairUrl)
+    .then((ok) => {
+      // Solo damos el aviso por hecho si SALIÓ. Antes se marcaba antes de
+      // enviar, así que un fallo de SMTP dejaba el episodio sin aviso y sin
+      // reintento.
+      alertaEnviada = !!ok;
+      if (!ok) console.error("❌ La alerta de re-vinculación NO se pudo enviar.");
+      return ok;
+    })
+    .catch((e) => {
+      console.error("❌ Error inesperado enviando la alerta:", e.message);
+      return false;
+    })
+    .finally(() => { alertaEnVuelo = null; });
+
+  return alertaEnVuelo;
 }
 
 client.on("qr", (qr) => {
@@ -746,10 +771,18 @@ async function cerrarLimpio(code, motivo) {
   cerrando = true;
   console.error(`🛑 Cerrando proceso (${motivo}). Liberando Chromium...`);
 
+  // 25s: cubre el destroy() (8s de margen propio) más un envío de mail lento.
   const forzar = setTimeout(() => {
-    console.error("⏱️ destroy() tardó demasiado, forzando salida.");
+    console.error("⏱️ El cierre tardó demasiado, forzando salida.");
     process.exit(code);
-  }, 8000);
+  }, 25000);
+
+  // Si quedó un mail a medio mandar, lo dejamos terminar: es el único aviso que
+  // va a recibir la persona de que hay que re-vincular.
+  if (alertaEnVuelo) {
+    console.log("📧 Espero a que termine de salir el mail de alerta...");
+    try { await alertaEnVuelo; } catch (e) { /* ya se logueó */ }
+  }
 
   try {
     await client.destroy();
@@ -791,8 +824,11 @@ client.on("disconnected", (reason) => {
     estuvoReady = false;
     pairingSolicitado = false;
     ultimoPairingCode = null;
-    dispararAlertaRevinculacion();
-    escalarReinicioInestable("disconnected: LOGOUT");
+    // Esperamos el mail ANTES de reiniciar: si salimos ya, el envío muere a
+    // mitad de camino y el episodio queda sin aviso.
+    dispararAlertaRevinculacion().finally(() => {
+      escalarReinicioInestable("disconnected: LOGOUT");
+    });
     return;
   }
 
