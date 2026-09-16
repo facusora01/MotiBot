@@ -465,7 +465,17 @@ client.on("code", (code) => {
   console.log(`🔑 Código de vinculación vigente: ${code}`);
 });
 
-client.on("authenticated", () => console.log("✅ Autenticado correctamente."));
+// 'authenticated' llega cuando WhatsApp acepta el QR o el código; 'ready',
+// cuando la página terminó de cargar y el bot puede trabajar. Entre las dos se
+// puede quedar colgado: la página re-inyecta en loop, 'authenticated' se repite
+// y 'ready' no llega nunca. Guardamos CUÁNDO fue la primera, para que las
+// repeticiones del loop no reinicien la cuenta regresiva.
+let autenticadoTs = 0;
+
+client.on("authenticated", () => {
+  console.log("✅ Autenticado correctamente.");
+  if (!autenticadoTs) autenticadoTs = Date.now();
+});
 client.on("auth_failure", (msg) => console.error("❌ Error de autenticación:", msg));
 
 let cronRegistrado = false;
@@ -491,6 +501,7 @@ client.on("ready", async () => {
 
   necesitaAuth = false;
   estuvoReady = true;
+  autenticadoTs = 0;
   alertaEnviada = false;
   pairingSolicitado = false;
   ultimoPairingCode = null;
@@ -847,6 +858,30 @@ let watchdogArmado = false;
 function getStateConTimeout(ms = 15000) {
   return conTimeout(client.getState(), ms, "getState");
 }
+
+// El watchdog de abajo solo se arma DENTRO de 'ready', así que no cubre el
+// caso de quedarse trabado antes de llegar ahí: el bot autentica, no termina de
+// cargar, y se queda muerto para siempre sin que nada lo detecte ni avise.
+// Pasó en producción. Este vigilante corre desde el arranque y mira justamente
+// esa ventana.
+//
+// La cuenta arranca en 'authenticated', no en el arranque del proceso: mientras
+// se espera que alguien escanee el QR no hay nada que reiniciar, y cortar ahí
+// obligaría a empezar el escaneo de nuevo.
+const LIMITE_SIN_READY = 5 * 60 * 1000;
+
+setInterval(() => {
+  if (cerrando || estuvoReady || !autenticadoTs) return;
+  if (Date.now() - autenticadoTs < LIMITE_SIN_READY) return;
+
+  const minutos = Math.round((Date.now() - autenticadoTs) / 60000);
+  console.error(
+    `🐕 Autenticado hace ${minutos} min y nunca llegó a 'ready': la página quedó trabada cargando.`
+  );
+  // Escala como cualquier otra inestabilidad: reinicia, y si insiste borra la
+  // sesión para forzar un QR nuevo.
+  escalarReinicioInestable("autenticado sin llegar a 'ready'");
+}, 30 * 1000).unref();
 
 function armarWatchdog() {
   if (watchdogArmado) return; // idempotente: 'ready' puede redisparar
