@@ -334,11 +334,17 @@ async function syncGroups() {
 // 'OPENING' —una espera SIN timeout, adentro de la librería— y nunca llega a
 // 'ready'. El bot queda congelado sin error ninguno.
 //
-// Apuntamos a un snapshot conocido del repo wa-version. Va por env var para
-// poder cambiarla desde el .env cuando esta quede vieja, sin tocar el código ni
-// esperar un deploy.
-const WA_WEB_VERSION = process.env.WA_WEB_VERSION || "2.3000.1047613002-alpha";
-const WA_WEB_URL = `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${WA_WEB_VERSION}.html`;
+// El default NO es la build más nueva sino una que sabemos que funcionó: la del
+// 9/9/2026, con el bot respondiendo comandos. Fijar la más nueva no alcanzó —
+// se congeló igual—, y tiene sentido: lo que rompe es que Meta cambie la página
+// por dentro, así que la que sirve es la última con la que la librería anduvo,
+// no la última que existe.
+//
+// Va por env var para poder cambiarla desde el .env sin tocar código ni esperar
+// un deploy. Las disponibles están en el repo wa-version (llevan sufijo -alpha).
+const WA_WEB_VERSION = process.env.WA_WEB_VERSION || "2.3000.1047079153-alpha";
+// {version} es el placeholder que reemplaza la librería (RemoteWebCache).
+const WA_WEB_URL = "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html";
 
 console.log(`📌 WhatsApp Web fijado en ${WA_WEB_VERSION}`);
 
@@ -347,6 +353,7 @@ const client = new Client({
     clientId: "motibot",
     dataPath: "./bot_session"
   }),
+  webVersion: WA_WEB_VERSION,
   webVersionCache: { type: "remote", remotePath: WA_WEB_URL },
   puppeteer: {
     headless: true,
