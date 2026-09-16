@@ -328,11 +328,26 @@ async function syncGroups() {
   console.log("🔄 Sincronización de grupos desactivada.");
 }
 
+// Versión de WhatsApp Web que carga el bot. Sin fijarla, Chromium se baja la
+// que Meta esté sirviendo ese día, y cuando esa build cambia por dentro la
+// librería no la sabe manejar: autentica, queda esperando que AppState salga de
+// 'OPENING' —una espera SIN timeout, adentro de la librería— y nunca llega a
+// 'ready'. El bot queda congelado sin error ninguno.
+//
+// Apuntamos a un snapshot conocido del repo wa-version. Va por env var para
+// poder cambiarla desde el .env cuando esta quede vieja, sin tocar el código ni
+// esperar un deploy.
+const WA_WEB_VERSION = process.env.WA_WEB_VERSION || "2.3000.1047613002-alpha";
+const WA_WEB_URL = `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${WA_WEB_VERSION}.html`;
+
+console.log(`📌 WhatsApp Web fijado en ${WA_WEB_VERSION}`);
+
 const client = new Client({
   authStrategy: new LocalAuth({
     clientId: "motibot",
     dataPath: "./bot_session"
   }),
+  webVersionCache: { type: "remote", remotePath: WA_WEB_URL },
   puppeteer: {
     headless: true,
     executablePath: process.env.CHROMIUM_PATH || "/usr/bin/chromium",
