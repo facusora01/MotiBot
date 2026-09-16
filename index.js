@@ -1281,10 +1281,20 @@ app.get("/pair", (req, res) => {
 });
 
 // Monitor externo (UptimeRobot/healthchecks) hace ping acá.
+// "Sano" es haber llegado a 'ready', no simplemente no estar pidiendo un QR.
+// Antes esto miraba solo necesitaAuth, y un bot autenticado pero trabado
+// cargando —que no responde nada— devolvía connected:true y 200 OK: un monitor
+// externo lo veía perfecto mientras estaba muerto. Justo el estado que un
+// health check tiene que delatar.
 app.get("/health", (req, res) => {
-  res.status(necesitaAuth ? 503 : 200).json({
-    connected: !necesitaAuth,
+  const sano = estuvoReady && !necesitaAuth;
+
+  res.status(sano ? 200 : 503).json({
+    connected: sano,
     everConnected: estuvoReady,
+    // Separa "esperando que alguien escanee" de "arrancando o trabado", que
+    // piden cosas distintas: una necesita una persona, la otra no.
+    waitingAuth: necesitaAuth,
     ts: new Date().toISOString(),
   });
 });
