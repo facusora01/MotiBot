@@ -1,5 +1,5 @@
 // Cliente del Centro de Estadísticas de Matba Rofex (CEM). Es la fuente de dos
-// cosas que la pizarra de ACAbase no da:
+// cosas que la pizarra de Barrilli no da:
 //   · historia diaria (la pizarra solo devuelve el día; acá hay años),
 //   · precios de futuros, que es lo que permite calcular el carry.
 //

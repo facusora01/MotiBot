@@ -669,7 +669,7 @@ No pongo valores por defecto a propósito: el que tiene silo propio y el que alq
 
 ━━━━━━━━━━━━━━━━━━━━
 _Todo esto es información de referencia y nunca una recomendación de venta._
-_Fuentes: pizarra ACAbase y Matba Rofex, con la fecha en cada mensaje._
+_Fuentes: pizarra Barrilli y Matba Rofex, con la fecha en cada mensaje._
 _Sirve para decidir mejor, no para decidir por vos._
 `.trim();
 
@@ -1368,13 +1368,30 @@ async function handleCommand(message, client) {
       // dirección inventada haría que dispare cuando no corresponde.
       let precioHoy = null;
       let fechaPizarra = null;
+      let hayPizarra = false;
+      let enPizarra = false;
       try {
         const { getMercado } = require("./mercado");
         const mercado = await getMercado();
+        hayPizarra = true;
         fechaPizarra = mercado.fecha;
-        precioHoy = mercado.granos.find((g) => g.codigo === grano)?.importe ?? null;
+        const fila = mercado.granos.find((g) => g.codigo === grano);
+        enPizarra = Boolean(fila);
+        precioHoy = Number.isFinite(fila?.importe) ? fila.importe : null;
       } catch (error) {
         console.error("❌ No pude leer la pizarra para crear la alerta:", error.message);
+      }
+
+      // Un grano puede estar en la pizarra solo con plazas en dólares (el
+      // girasol, por ejemplo, que muchos días no cotiza en Rosario). Las alertas
+      // van en pesos, así que ahí no hay contra qué compararlas: no es lo mismo
+      // que la pizarra no haya cargado, y decirlo mal manda a reintentar al pedo.
+      if (precioHoy === null && hayPizarra) {
+        return message.reply(
+          `⚠️ ${alertas.nombreGrano(grano)} hoy no tiene precio en pesos en la pizarra` +
+            `${enPizarra ? " (solo cotizó en dólares en las plazas de puerto)" : ""}, ` +
+            "así que no puedo armar una alerta en pesos. Probá mañana."
+        );
       }
 
       if (precioHoy === null) {

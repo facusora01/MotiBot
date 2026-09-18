@@ -3,7 +3,7 @@
 // mirando la pizarra todos los días, que es lo que la persona no puede hacer.
 const db = require("./database");
 
-// Alias hacia el código que usa la pizarra de ACAbase.
+// Alias hacia el código que usa la pizarra de Barrilli.
 const GRANOS = {
   trigo: "TR",
   soja: "SO", soya: "SO",
@@ -83,7 +83,11 @@ function describir(alerta, i) {
 // llamador, y recién después de que el aviso salió.
 function evaluar(granos) {
   const precios = {};
-  for (const g of granos) precios[g.codigo] = g.importe;
+  // Solo los granos con precio en pesos: las alertas se cargan en pesos y un
+  // grano que hoy no cotizo en Rosario no puede cumplir ni desmentir nada.
+  for (const g of granos) {
+    if (Number.isFinite(g.importe)) precios[g.codigo] = g.importe;
+  }
 
   const porChat = new Map();
 
@@ -119,7 +123,7 @@ function mensajeDisparo(cumplidas, fechaPizarra) {
     `${lineas.join("\n\n")}\n\n` +
     `_${cumplidas.length === 1 ? "La borro" : "Las borro"} para no repetir el aviso todos los días. ` +
     `Podés crear otra con_ \`/mbot alerta <grano> <precio>\`\n\n` +
-    `_Información de referencia (pizarra ACAbase), no es una recomendación de venta._`
+    `_Información de referencia (pizarra Barrilli), no es una recomendación de venta._`
   );
 }
 
