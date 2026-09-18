@@ -293,6 +293,28 @@ async function resolverMenciones(client, msg, texto) {
   return out;
 }
 
+// WhatsApp guarda el thumbnail de las imágenes/videos como base64 dentro de
+// `body`. Si lo tomáramos como texto, un /add sobre una foto sin epígrafe
+// terminaría contando miles de "caracteres" en vez de avisar que no hay texto.
+function pareceBase64(s) {
+  if (typeof s !== "string") return false;
+  const limpio = s.replace(/^data:[^,]*,/, "");
+  return limpio.length > 300 && !/\s/.test(limpio) && /^[A-Za-z0-9+/=_-]+$/.test(limpio);
+}
+
+// Texto real de un mensaje citado: el body si es texto, el epígrafe si es media.
+function textoDeCitado(quoted) {
+  if (!quoted) return "";
+  const tipo = quoted.type || quoted._data?.type || "";
+  const caption = String(quoted._data?.caption || quoted.caption || "").trim();
+  // Todo lo que no sea "chat" es media (imagen, video, sticker, audio, doc...).
+  if (tipo && tipo !== "chat") return caption;
+  const body = String(quoted.body || "");
+  // Red de seguridad por si el tipo no vino (builds viejas de WhatsApp Web).
+  if (pareceBase64(body)) return caption;
+  return body;
+}
+
 // getQuotedMessage() evalúa en la página y explota (error minificado tipo "r: r")
 // cuando el mensaje citado ya no está en el Store: mensajes viejos, borrados, o
 // de una sesión anterior a este arranque. Ese raw sí viaja dentro del mensaje que
@@ -313,11 +335,15 @@ async function obtenerCitado(client, message) {
   const autorId = typeof part === "string" ? part : part?._serialized;
 
   return {
+    type: raw.type || "",
+    caption: raw.caption || "",
     body: raw.body || raw.caption || "",
     author: autorId,
     from: autorId,
     mentionedIds: raw.mentionedJidList || [],
     _data: {
+      type: raw.type || "",
+      caption: raw.caption || "",
       notifyName: raw.notifyName,
       mentionedJidList: raw.mentionedJidList || [],
     },
@@ -845,12 +871,13 @@ async function handleCommand(message, client) {
       // 🛡️ Solo guardamos TEXTO. Aceptamos mensajes escritos y captions de
       // imagen/video (vienen en body). Si no hay texto (sticker, audio/voz,
       // imagen sin epígrafe, ubicación...), cortamos rápido antes de procesar.
-      if (!quoted.body || !quoted.body.trim()) {
+      const textoCitado = textoDeCitado(quoted);
+      if (!textoCitado.trim()) {
         return message.reply("❌ Ese mensaje no tiene texto para guardar. Respondé a un mensaje escrito, o a una imagen/video con epígrafe (no sticker ni audio).");
       }
 
       // Resolvemos las menciones (@id → @Nombre) ANTES de colapsar espacios.
-      let phrase = await resolverMenciones(client, quoted, quoted.body || "");
+      let phrase = await resolverMenciones(client, quoted, textoCitado);
       phrase = phrase.replace(/\s+/g, ' ').trim();
 
       if (!phrase || phrase.length < 5) {
