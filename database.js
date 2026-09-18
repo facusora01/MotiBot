@@ -686,9 +686,26 @@ function guardarPizarra(fechaISO, granos) {
       INSERT INTO market_history (fecha, producto, importe) VALUES (?, ?, ?)
       ON CONFLICT(fecha, producto) DO UPDATE SET importe = excluded.importe
     `);
-    for (const g of granos) stmt.run(fechaISO, g.codigo, g.importe);
+    for (const g of granos) {
+      // Barrilli no siempre cotiza Rosario (el girasol, por ejemplo): ese grano
+      // viene sin precio en pesos y no hay nada que historiar.
+      if (!Number.isFinite(g.importe)) continue;
+      stmt.run(fechaISO, g.codigo, g.importe);
+    }
   });
   return guardar();
+}
+
+// La pizarra guardada mas reciente ANTERIOR a esa fecha. Barrilli no publica la
+// variacion contra la rueda anterior (ACAbase si la traia), asi que la calculamos
+// contra lo ultimo que registramos.
+function getPizarraAnterior(fechaISO) {
+  const fila = db.prepare(`SELECT MAX(fecha) AS fecha FROM market_history WHERE fecha < ?`).get(fechaISO);
+  if (!fila?.fecha) return null;
+  const filas = db.prepare(`SELECT producto, importe FROM market_history WHERE fecha = ?`).all(fila.fecha);
+  const precios = {};
+  for (const f of filas) precios[f.producto] = Number(f.importe);
+  return { fecha: fila.fecha, precios };
 }
 
 // Guarda o actualiza filas de la serie de MATBA. COALESCE: si una rueda ya
@@ -801,6 +818,7 @@ module.exports = {
   MAX_ALERTAS_POR_CHAT,
   guardarPizarra,
   guardarMatba,
+  getPizarraAnterior,
   getMatbaHistoria,
   contarMatba,
   resumenMatba,
