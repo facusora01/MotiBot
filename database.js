@@ -126,6 +126,18 @@ db.exec(`
     PRIMARY KEY (fecha, producto)
   );
 
+  -- Que granos ya recibio cada grupo, por dia. Barrilli carga la pizarra a mano
+  -- y a veces publica unos granos primero y el resto mas tarde: con esto sabemos
+  -- cual mandar cuando aparece, sin repetir los que ya salieron. Va en tabla y no
+  -- en memoria para que un reinicio no vuelva a mandar lo mismo.
+  CREATE TABLE IF NOT EXISTS market_sent_grains (
+    group_id   TEXT NOT NULL,
+    fecha      TEXT NOT NULL,
+    producto   TEXT NOT NULL,
+    enviado_en DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (group_id, fecha, producto)
+  );
+
   -- Mapa emoji → idea del último listado de cada grupo: resuelve a qué idea
   -- corresponde una reacción.
   CREATE TABLE IF NOT EXISTS idea_polls (
@@ -284,6 +296,7 @@ function deleteGroupCompleto(groupId) {
     db.prepare(`DELETE FROM ideas WHERE group_id = ?`).run(groupId);
     db.prepare(`DELETE FROM birthdays WHERE group_id = ?`).run(groupId);
     db.prepare(`DELETE FROM custom_phrases WHERE group_id = ?`).run(groupId);
+    db.prepare(`DELETE FROM market_sent_grains WHERE group_id = ?`).run(groupId);
     db.prepare(`DELETE FROM group_settings WHERE group_id = ?`).run(groupId);
     return db.prepare(`DELETE FROM groups WHERE group_id = ?`).run(groupId).changes > 0;
   });
@@ -804,6 +817,29 @@ function markMarketSent(groupId, hoyISO) {
   db.prepare(`UPDATE group_settings SET market_last_sent = ? WHERE group_id = ?`).run(hoyISO, groupId);
 }
 
+// Los granos que ya le mandamos a un grupo en la pizarra de esa fecha.
+function getGranosEnviados(groupId, fechaISO) {
+  return db.prepare(`
+    SELECT producto FROM market_sent_grains WHERE group_id = ? AND fecha = ?
+  `).all(groupId, fechaISO).map((f) => f.producto);
+}
+
+// Idempotente: el tick puede pasar mas de una vez por el mismo envio.
+function marcarGranosEnviados(groupId, fechaISO, codigos) {
+  const guardar = db.transaction(() => {
+    const stmt = db.prepare(`
+      INSERT OR IGNORE INTO market_sent_grains (group_id, fecha, producto) VALUES (?, ?, ?)
+    `);
+    for (const c of codigos) stmt.run(groupId, fechaISO, c);
+  });
+  return guardar();
+}
+
+// La tabla solo sirve para el dia en curso: sin esto crece para siempre.
+function limpiarGranosEnviados(antesDeISO) {
+  return db.prepare(`DELETE FROM market_sent_grains WHERE fecha < ?`).run(antesDeISO).changes;
+}
+
 module.exports = {
   addGroup,
   registrarChatPrivado,
@@ -833,6 +869,9 @@ module.exports = {
   isMarketEnabled,
   getMarketGroups,
   markMarketSent,
+  getGranosEnviados,
+  marcarGranosEnviados,
+  limpiarGranosEnviados,
   removeGroup,
   getActiveGroups,
   getGroup,
