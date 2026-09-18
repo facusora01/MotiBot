@@ -10,7 +10,7 @@ const { handleCommand, handleReaction, esSuperAdmin } = require("./commands");
 const { alertarRevinculacion } = require("./notify");
 const { respaldarSesion, restaurarSesionSiHaceFalta, borrarSesionYBackup } = require("./session-backup");
 const { getTunnelUrl } = require("./tunnel-url");
-const { getMercado, fechaPizarraISO } = require("./mercado");
+const { getMercado, formatearActualizacion, fechaPizarraISO } = require("./mercado");
 const alertas = require("./alertas");
 const historia = require("./historia");
 
@@ -246,9 +246,70 @@ async function enviarMercado(client, ahoraHHMM) {
       );
       // Recién acá: si el envío falló, en el próximo tick se reintenta.
       db.markMarketSent(grupo.group_id, hoy.iso);
+      db.marcarGranosEnviados(grupo.group_id, hoy.iso, mercado.granos.map((g) => g.codigo));
       console.log(`🌾 [${hoy.iso}] Mercado enviado a ${grupo.group_name}`);
     } catch (error) {
       console.error(`❌ Error enviando el mercado a ${grupo.group_name}:`, error.message);
+    }
+  }
+}
+
+// Barrilli carga la pizarra a mano y no siempre de una vez: el 18/9/26 mandó
+// trigo, maíz y sorgo a las 10:30 y dejó soja y girasol en blanco. El grupo ya
+// recibió su placa, así que cuando el grano que faltaba aparece le mandamos solo
+// ese, en un mensaje corto, en vez de repetir la pizarra entera.
+//
+// Sondeamos hasta las 20:00: más tarde ya no van a cargar nada y no tiene
+// sentido seguir pegándole a la página.
+const HORA_CORTE_FALTANTES = "20:00";
+let sinFaltantes = null; // fecha ISO de la pizarra que ya vino completa
+
+async function enviarGranosFaltantes(client, ahoraHHMM) {
+  const hoy = fechaArgentina();
+  if (sinFaltantes === hoy.iso) return;
+  if (aMinutos(ahoraHHMM) > aMinutos(HORA_CORTE_FALTANTES)) return;
+
+  // Solo los grupos que ya recibieron la placa de hoy: a los que todavía la
+  // esperan los atiende enviarMercado, que manda todo junto.
+  const grupos = db.getMarketGroups().filter((g) => g.market_last_sent === hoy.iso);
+  if (!grupos.length) return;
+
+  let mercado;
+  try {
+    mercado = await getMercado();
+  } catch (error) {
+    return; // enviarMercado ya loguea el fallo de lectura
+  }
+
+  if (fechaPizarraISO(mercado.fecha) !== hoy.iso) return;
+
+  if (!mercado.faltantes?.length) {
+    // Nada pendiente: no volvemos a consultar en todo el día.
+    sinFaltantes = hoy.iso;
+    return;
+  }
+
+  for (const grupo of grupos) {
+    const yaEnviados = new Set(db.getGranosEnviados(grupo.group_id, hoy.iso));
+    // Si no hay registro (grupo que recibió la placa antes de esta versión), no
+    // sabemos qué vio: lo damos por completo y esperamos a mañana.
+    if (!yaEnviados.size) continue;
+
+    const nuevos = mercado.granos.filter((g) => !yaEnviados.has(g.codigo));
+    if (!nuevos.length) continue;
+
+    try {
+      await conTimeout(
+        client.sendMessage(grupo.group_id, formatearActualizacion({ fecha: mercado.fecha, granos: nuevos })),
+        REPLY_TIMEOUT,
+        `granos tardíos a ${grupo.group_name}`
+      );
+      db.marcarGranosEnviados(grupo.group_id, hoy.iso, nuevos.map((g) => g.codigo));
+      console.log(
+        `🌾 [${hoy.iso}] ${nuevos.map((g) => g.nombre).join(", ")} (cargados más tarde) a ${grupo.group_name}`
+      );
+    } catch (error) {
+      console.error(`❌ Error enviando los granos tardíos a ${grupo.group_name}:`, error.message);
     }
   }
 }
@@ -261,11 +322,15 @@ async function enviarMercado(client, ahoraHHMM) {
 // eso la alerta cumplida se borra después de avisar.
 //
 // MotiBot no opina sobre el número: el umbral lo puso la persona.
-let pizarraProcesada = null; // fecha ISO de la última pizarra ya procesada
+// Qué granos de la pizarra de hoy ya guardamos y evaluamos. Es por grano y no
+// por día porque la pizarra puede completarse en varias tandas: si lo dejáramos
+// en "ya procesé hoy", la soja que Barrilli carga a las 13 no entraría nunca al
+// historial ni dispararía su alerta.
+let procesados = { fecha: null, codigos: new Set() };
 
 async function procesarPizarraDelDia(client, ahoraHHMM) {
   const hoy = fechaArgentina();
-  if (pizarraProcesada === hoy.iso) return;
+  if (procesados.fecha !== hoy.iso) procesados = { fecha: hoy.iso, codigos: new Set() };
 
   // Ventana de sondeo: la rueda se publica cerca de las 10:30. Fuera de esa
   // franja no tiene sentido pegarle al feed.
@@ -285,12 +350,20 @@ async function procesarPizarraDelDia(client, ahoraHHMM) {
 
   if (fechaPizarraISO(mercado.fecha) !== hoy.iso) return;
 
-  pizarraProcesada = hoy.iso;
+  // Solo lo que todavía no procesamos hoy: el resto ya está guardado y sus
+  // alertas ya se evaluaron.
+  const nuevos = mercado.granos.filter(
+    (g) => Number.isFinite(g.importe) && !procesados.codigos.has(g.codigo)
+  );
+  if (!nuevos.length) return;
 
-  // Historia: el feed solo devuelve el día, así que si no la guardamos ahora no
+  const primeraVuelta = procesados.codigos.size === 0;
+  for (const g of nuevos) procesados.codigos.add(g.codigo);
+
+  // Historia: la página solo muestra el día, así que si no la guardamos ahora no
   // hay con qué comparar nunca.
   try {
-    db.guardarPizarra(hoy.iso, mercado.granos);
+    db.guardarPizarra(hoy.iso, nuevos);
   } catch (error) {
     console.error("❌ No pude guardar la pizarra del día:", error.message);
   }
@@ -298,13 +371,23 @@ async function procesarPizarraDelDia(client, ahoraHHMM) {
   // Y la serie de Matba Rofex, que es la que usan las comparaciones y el carry.
   // Va acá y no en su propio horario porque es el momento en que sabemos que la
   // rueda del día ya cerró.
-  try {
-    await historia.actualizar(hoy.iso);
-  } catch (error) {
-    console.error("❌ No pude actualizar la serie de Matba Rofex:", error.message);
+  if (primeraVuelta) {
+    // El registro de qué grano recibió cada grupo solo sirve para el día en
+    // curso; una vez por día alcanza para que la tabla no crezca sola.
+    try {
+      db.limpiarGranosEnviados(hoy.iso);
+    } catch (error) {
+      console.error("❌ No pude limpiar el registro de granos enviados:", error.message);
+    }
+
+    try {
+      await historia.actualizar(hoy.iso);
+    } catch (error) {
+      console.error("❌ No pude actualizar la serie de Matba Rofex:", error.message);
+    }
   }
 
-  const porChat = alertas.evaluar(mercado.granos);
+  const porChat = alertas.evaluar(nuevos);
   if (!porChat.size) return;
 
   for (const [chatId, cumplidas] of porChat) {
@@ -622,6 +705,7 @@ client.on("ready", async () => {
     }
 
     await enviarMercado(client, now);
+    await enviarGranosFaltantes(client, now);
     await procesarPizarraDelDia(client, now);
   } catch (err) {
     console.error("⚠️ Error en tick del scheduler (se omite, no se cae el bot):", err.message);

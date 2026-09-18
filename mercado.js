@@ -143,6 +143,10 @@ function parsearPizarra(html) {
   let fecha = null;
   let fechaPrecios = null;
   const granos = [];
+  // Barrilli carga la tabla a mano y a veces la publica incompleta: la fila del
+  // grano está, pero vacía. No es lo mismo que un grano que no cotiza en la
+  // pizarra, así que los juntamos aparte para poder avisarlo.
+  const faltantes = [];
 
   for (const celdas of filas) {
     // Pie de la tabla: "Fijación del 17/09/2026 | Precios del 16/09/2026". Va
@@ -183,10 +187,19 @@ function parsearPizarra(html) {
         importe: valor,
       });
     }
-    if (!plazas.length) continue;
+    const meta = GRANOS[codigo];
+
+    if (!plazas.length) {
+      faltantes.push({
+        codigo,
+        nombre: meta?.nombre || celdas[0],
+        emoji: meta?.emoji || "•",
+        orden: meta?.orden || 99,
+      });
+      continue;
+    }
     plazas.sort((a, b) => a.orden - b.orden);
 
-    const meta = GRANOS[codigo];
     // `importe` es el precio en pesos de Rosario: es el que usan las alertas, el
     // historial y el carry, todos cargados en pesos. Si esa plaza no cotizó, el
     // grano igual se muestra con sus plazas en dólares, pero sin número testigo.
@@ -210,9 +223,10 @@ function parsearPizarra(html) {
   if (!fecha) throw new Error("la pizarra vino sin fecha de fijación");
 
   granos.sort((a, b) => a.orden - b.orden || a.nombre.localeCompare(b.nombre));
+  faltantes.sort((a, b) => a.orden - b.orden);
   for (const g of granos) g.fecha = fecha;
 
-  return { fecha, fechaPrecios, granos };
+  return { fecha, fechaPrecios, granos, faltantes };
 }
 
 // dd/mm/yyyy → ISO, para comparar la fecha de la pizarra contra hoy. Fin de
@@ -294,23 +308,41 @@ function variacion(importe, dif) {
   return `${flecha} ${signo}${pesos(Math.abs(pct), 2)}%  (${enPesos})`;
 }
 
-function formatearMercado({ fecha, granos, dolar }) {
-  const bloques = granos.map((g) => {
-    const enPesos = g.plazas.filter((p) => p.moneda !== "USD");
-    const enDolares = g.plazas.filter((p) => p.moneda === "USD");
+function bloqueGrano(g) {
+  const enPesos = g.plazas.filter((p) => p.moneda !== "USD");
+  const enDolares = g.plazas.filter((p) => p.moneda === "USD");
 
-    const lineas = enPesos.map((p) => `    ${precioPlaza(p)} _(${p.plaza})_`);
+  const lineas = enPesos.map((p) => `    ${precioPlaza(p)} _(${p.plaza})_`);
 
-    // La variación cuelga del precio testigo en pesos: es el único del que
-    // tenemos días anteriores guardados.
-    if (Number.isFinite(g.importe)) lineas.push(`    ${variacion(g.importe, g.dif)}`);
+  // La variación cuelga del precio testigo en pesos: es el único del que
+  // tenemos días anteriores guardados.
+  if (Number.isFinite(g.importe)) lineas.push(`    ${variacion(g.importe, g.dif)}`);
 
-    if (enDolares.length) {
-      lineas.push("    " + enDolares.map((p) => `${precioPlaza(p)} _(${p.plaza})_`).join(" · "));
-    }
+  if (enDolares.length) {
+    lineas.push("    " + enDolares.map((p) => `${precioPlaza(p)} _(${p.plaza})_`).join(" · "));
+  }
 
-    return `${g.emoji} *${g.nombre}*\n${lineas.join("\n")}`;
-  });
+  return `${g.emoji} *${g.nombre}*\n${lineas.join("\n")}`;
+}
+
+// "Soja", "Soja y Girasol", "Soja, Girasol y Maíz".
+function enumerar(nombres) {
+  if (nombres.length <= 1) return nombres[0] || "";
+  return `${nombres.slice(0, -1).join(", ")} y ${nombres[nombres.length - 1]}`;
+}
+
+// La pizarra contra la que se comparó. Suele ser la rueda anterior, pero si el
+// bot estuvo caído unos días es una más vieja, y decir "contra la anterior" sin
+// aclarar cuál haría pasar por variación del día algo que no lo es.
+function notaVariacion(granos) {
+  const fechas = [...new Set(granos.map((g) => g.difFecha).filter(Boolean))];
+  if (fechas.length !== 1) return "La variación es del precio en pesos contra la pizarra anterior.";
+  const [y, m, d] = fechas[0].split("-");
+  return `La variación es del precio en pesos contra la pizarra del ${d}/${m}/${y}.`;
+}
+
+function formatearMercado({ fecha, granos, faltantes, dolar }) {
+  const bloques = granos.map(bloqueGrano);
 
   let texto =
     `🚜 *MERCADO DE GRANOS* 🌾\n` +
@@ -323,11 +355,30 @@ function formatearMercado({ fecha, granos, dolar }) {
       `    Compra $ ${pesos(dolar.compra, 2)}  ·  Venta $ ${pesos(dolar.venta, 2)}\n`;
   }
 
+  if (faltantes?.length) {
+    texto +=
+      `\n⏳ _Barrilli todavía no cargó ${enumerar(faltantes.map((g) => g.nombre))} en esta pizarra. ` +
+      `Si sale más tarde, te lo mando aparte._\n`;
+  }
+
   texto +=
     `\n_Valores por tonelada. Rosario y Córdoba en pesos; las plazas de puerto, en dólares._\n` +
-    `_La variación es del precio en pesos contra la pizarra anterior._\n` +
+    `_${notaVariacion(granos)}_\n` +
     `_Fuente: pizarra Barrilli._`;
   return texto;
+}
+
+// Mensaje corto para un grano que Barrilli cargó después de que ya mandamos la
+// placa del día: repetir la pizarra entera por una sola línea nueva sería ruido.
+function formatearActualizacion({ fecha, granos }) {
+  const uno = granos.length === 1;
+  return (
+    `🚜 *${uno ? "Se cargó el grano que faltaba" : "Se cargaron los granos que faltaban"}* 🌾\n` +
+    `📅 Pizarra del ${fecha}\n\n` +
+    `${granos.map(bloqueGrano).join("\n\n")}\n\n` +
+    `_Valores por tonelada. ${notaVariacion(granos)}_\n` +
+    `_Fuente: pizarra Barrilli._`
+  );
 }
 
 // Devuelve { fecha, granos, dolar, texto }. Tira si la pizarra no se pudo leer:
@@ -345,4 +396,10 @@ async function getMercado({ forzar = false } = {}) {
   return datos;
 }
 
-module.exports = { getMercado, formatearMercado, fechaPizarraISO, parsearPizarra };
+module.exports = {
+  getMercado,
+  formatearMercado,
+  formatearActualizacion,
+  fechaPizarraISO,
+  parsearPizarra,
+};
