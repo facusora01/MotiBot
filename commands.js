@@ -1992,9 +1992,12 @@ _Además puedo avisarles cuando un grano toque un precio, y ayudarlos con la cue
           `Entrá directo al panel de *${group.group_name}*:\n` +
           `👉 ${baseUrl}/frases/${groupId}?key=${token}\n\n` +
           `Tu dispositivo va a recordar el acceso, no hace falta volver a ingresarla.\n\n` +
-          `Si te la piden igual, el token es:\n*${token}*\n\n` +
-          `⚠️ _No compartas este mensaje con nadie del grupo._`
+          `Si te la piden igual, el token te lo mando en el mensaje de abajo, solo, para que lo copies fácil.\n\n` +
+          `⚠️ _No compartas estos mensajes con nadie del grupo._`
         );
+        // El token va solo y sin formato: así se copia con un toque, sin
+        // arrastrar texto ni los asteriscos del negrita.
+        await client.sendMessage(adminId, token);
       } catch (error) {
         console.error("❌ Error enviando link privado:", error);
         return message.reply("⚠️ No pude mandarte la llave por mensaje privado. ¿Me tenés bloqueado?");
