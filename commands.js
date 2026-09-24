@@ -197,15 +197,28 @@ async function isAdmin(message, client) {
     if (chatCached && (Date.now() - chatCached.timestamp) < ADMIN_CACHE_TIME) {
       participants = chatCached.participants;
     } else {
-      const chat = await message.getChat();
-      if (!chat.isGroup) return false;
+      // getChat() revienta ("r: r") si el chat no está cacheado con ids @lid.
+      let chat;
+      try {
+        chat = await message.getChat();
+      } catch (e) {
+        chat = await client.getChatById(groupId);
+      }
+      if (!chat?.isGroup) return false;
       participants = chat.participants || [];
       groupChatCache.set(groupId, { participants, timestamp: Date.now() });
     }
 
+    // resolverNumero cambia el @lid por el teléfono, pero en los grupos con
+    // direccionamiento LID los participantes también vienen como @lid: hay que
+    // aceptar las dos identidades del remitente o un admin real nunca matchea.
+    const rawSender = String(message.author || message.from || "").split('@')[0].split(':')[0];
+    const identidades = new Set([number, rawSender].filter(Boolean));
+
     const participant = participants.find((p) => {
       const pNumber = p.id.user || p.id._serialized.split('@')[0].split(':')[0];
-      return pNumber === number;
+      const pPhone = p.phoneNumber ? String(p.phoneNumber._serialized || p.phoneNumber.user || p.phoneNumber).split('@')[0] : null;
+      return identidades.has(pNumber) || (pPhone && identidades.has(pPhone));
     });
 
     const isAdminResult = participant?.isAdmin || participant?.isSuperAdmin || false;
