@@ -1149,9 +1149,18 @@ app.get("/frases/:groupId", (req, res) => {
         .phrase-row { display: flex; align-items: center; padding: 12px 20px; border-bottom: 1px solid var(--border); gap: 15px; }
         .phrase-row:hover { background: #f1f3f5; }
         .phrase-row.hidden { display: none; }
-        .content-col { flex-grow: 1; overflow: hidden; }
-        .phrase-text { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+        .content-col { flex: 1; min-width: 0; }
+        /* La frase entera, en varias líneas si hace falta: cortada con "…" no se leía. */
+        .phrase-text { font-weight: 500; white-space: pre-line; overflow-wrap: anywhere; display: block; margin-bottom: 4px; }
         .meta-col { text-align: right; font-size: 0.85em; color: #6c757d; min-width: 150px; }
+        /* En el celular la columna del autor le comía el ancho a la frase: va abajo. */
+        @media (max-width: 600px) {
+          body { padding: 10px; }
+          .phrase-row { flex-wrap: wrap; align-items: flex-start; gap: 6px 12px; padding: 12px 14px; }
+          .phrase-row .p-cb { margin-top: 4px; }
+          .content-col { flex-basis: calc(100% - 40px); }
+          .meta-col { flex-basis: 100%; min-width: 0; text-align: left; padding-left: 28px; }
+        }
         .actions-bar { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #343a40; color: white; padding: 12px 25px; border-radius: 50px; display: none; align-items: center; gap: 20px; box-shadow: 0 5px 15px rgba(0,0,0,0.2); }
         .btn { padding: 6px 12px; border-radius: 4px; border: none; cursor: pointer; font-weight: bold; }
         .btn-del { background: var(--danger); color: white; }
