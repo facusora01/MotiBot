@@ -209,19 +209,33 @@ async function isAdmin(message, client) {
       groupChatCache.set(groupId, { participants, timestamp: Date.now() });
     }
 
-    // resolverNumero cambia el @lid por el teléfono, pero en los grupos con
-    // direccionamiento LID los participantes también vienen como @lid: hay que
-    // aceptar las dos identidades del remitente o un admin real nunca matchea.
-    const rawSender = String(message.author || message.from || "").split('@')[0].split(':')[0];
-    const identidades = new Set([number, rawSender].filter(Boolean));
+    // El remitente puede llegar como @lid y los participantes como @c.us, o al
+    // revés, según el grupo. resolverNumero depende de getContact(), que falla
+    // con @lid, así que le pedimos a WhatsApp las dos identidades y aceptamos
+    // cualquiera: si no, un admin real nunca matchea.
+    const soloUser = (id) => String(id || "").split('@')[0].split(':')[0];
+    const rawSenderId = message.author || message.from;
+    const identidades = new Set([number, soloUser(rawSenderId)].filter(Boolean));
+    try {
+      const [ids] = await client.getContactLidAndPhone([rawSenderId]);
+      if (ids?.lid) identidades.add(soloUser(ids.lid));
+      if (ids?.pn) identidades.add(soloUser(ids.pn));
+    } catch (e) {
+      console.warn("⚠️ No pude resolver lid/teléfono del remitente:", e.message);
+    }
 
     const participant = participants.find((p) => {
-      const pNumber = p.id.user || p.id._serialized.split('@')[0].split(':')[0];
-      const pPhone = p.phoneNumber ? String(p.phoneNumber._serialized || p.phoneNumber.user || p.phoneNumber).split('@')[0] : null;
+      const pNumber = p.id.user || soloUser(p.id._serialized);
+      const pPhone = p.phoneNumber ? soloUser(p.phoneNumber._serialized || p.phoneNumber.user || p.phoneNumber) : null;
       return identidades.has(pNumber) || (pPhone && identidades.has(pPhone));
     });
 
     const isAdminResult = participant?.isAdmin || participant?.isSuperAdmin || false;
+    if (!isAdminResult) {
+      console.log(`🔒 isAdmin=false en ${groupId}: remitente [${[...identidades].join(", ")}], ` +
+        `${participant ? "es participante sin admin" : `no matcheó entre ${participants.length} participantes ` +
+        `(ej: ${participants.slice(0, 3).map((p) => p.id._serialized).join(", ")})`}`);
+    }
     setCachedAdmin(groupId, number, isAdminResult);
     
     return isAdminResult;
