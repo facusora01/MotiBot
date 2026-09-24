@@ -180,6 +180,36 @@ async function esSuperAdmin(message) {
   return SUPER_ADMINS.includes(await resolverNumero(message));
 }
 
+// Participantes leídos directo del Store de WhatsApp Web, con el lid y el
+// teléfono de cada uno. Evita getChat(), cuyo groupMetadata.update() revienta
+// con "r" en los grupos @lid. null si la metadata no está cargada en la página.
+async function participantesDelGrupo(client, groupId) {
+  try {
+    return await client.pupPage.evaluate(async (gid) => {
+      const wid = window.Store.WidFactory.createWid(gid);
+      const col = window.Store.GroupMetadata || window.Store.WAWebGroupMetadataCollection;
+      const meta = col?.get(wid) || window.Store.Chat?.get(wid)?.groupMetadata;
+      const modelos = meta?.participants?._models || meta?.participants?.getModelsArray?.();
+      if (!modelos?.length) return null;
+
+      const intentar = (fn) => { try { return fn()?._serialized || null; } catch (e) { return null; } };
+      return modelos.map((p) => {
+        const esLid = p.id.server === "lid";
+        return {
+          id: { _serialized: p.id._serialized, user: p.id.user },
+          lid: esLid ? p.id._serialized : intentar(() => window.Store.LidUtils.getCurrentLid(p.id)),
+          pn: esLid ? intentar(() => window.Store.LidUtils.getPhoneNumber(p.id)) : p.id._serialized,
+          isAdmin: Boolean(p.isAdmin),
+          isSuperAdmin: Boolean(p.isSuperAdmin),
+        };
+      });
+    }, groupId);
+  } catch (e) {
+    console.warn(`⚠️ No pude leer los participantes de ${groupId} desde el Store:`, e.message);
+    return null;
+  }
+}
+
 async function isAdmin(message, client) {
   try {
     const number = await resolverNumero(message);
@@ -197,15 +227,14 @@ async function isAdmin(message, client) {
     if (chatCached && (Date.now() - chatCached.timestamp) < ADMIN_CACHE_TIME) {
       participants = chatCached.participants;
     } else {
-      // getChat() revienta ("r: r") si el chat no está cacheado con ids @lid.
-      let chat;
-      try {
-        chat = await message.getChat();
-      } catch (e) {
-        chat = await client.getChatById(groupId);
+      participants = await participantesDelGrupo(client, groupId);
+      if (!participants) {
+        // Plan B: getChat() pasa por groupMetadata.update(), que revienta
+        // ("r") en grupos con ids @lid. Por eso va segundo.
+        const chat = await message.getChat();
+        if (!chat?.isGroup) return false;
+        participants = chat.participants || [];
       }
-      if (!chat?.isGroup) return false;
-      participants = chat.participants || [];
       groupChatCache.set(groupId, { participants, timestamp: Date.now() });
     }
 
@@ -227,7 +256,7 @@ async function isAdmin(message, client) {
     const participant = participants.find((p) => {
       const pNumber = p.id.user || soloUser(p.id._serialized);
       const pPhone = p.phoneNumber ? soloUser(p.phoneNumber._serialized || p.phoneNumber.user || p.phoneNumber) : null;
-      return identidades.has(pNumber) || (pPhone && identidades.has(pPhone));
+      return [pNumber, pPhone, soloUser(p.lid), soloUser(p.pn)].some((id) => id && identidades.has(id));
     });
 
     const isAdminResult = participant?.isAdmin || participant?.isSuperAdmin || false;
