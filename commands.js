@@ -216,7 +216,9 @@ async function isAdmin(message, client) {
 
     if (SUPER_ADMINS.includes(number)) return true;
 
-    const groupId = message.from;
+    // Escrito desde el teléfono del bot: "from" es nuestro número y el grupo
+    // viene en "to".
+    const groupId = message.fromMe ? message.to : message.from;
     const cached = getCachedAdmin(groupId, number);
     if (cached !== null) return cached;
 
