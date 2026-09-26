@@ -81,7 +81,7 @@ if (typeof WebSocket !== "function" || typeof fetch !== "function") {
 if (!/^mbk_[A-Za-z0-9_-]{43}$/.test(token)) salir("Falta el token (--token mbk_...). Lo pedís con /mbot llm add por privado.");
 if (!/^[A-Za-z0-9._:/-]{1,64}$/.test(modelo)) salir("Falta el modelo (--model llama3.1).");
 // Sin cifrar solo contra la misma PC (pruebas locales).
-const RE_SERVIDOR = /^(wss:\/\/[^\s/]+|ws:\/\/(127\.0\.0\.1|localhost)(:\d+)?)\/agent$/;
+const RE_SERVIDOR = /^(wss:\/\/[^\s/]+(\/[A-Za-z0-9._-]+)*|ws:\/\/(127\.0\.0\.1|localhost)(:\d+)?)\/agent$/;
 if (!RE_SERVIDOR.test(servidor)) salir("La URL del servidor tiene que ser wss://.../agent (conexión cifrada).");
 
 // Ollama tiene que ser local: el agente no le manda tus chats a otra máquina.

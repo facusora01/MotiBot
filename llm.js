@@ -18,11 +18,20 @@ const WS_DIR = path.dirname(require.resolve("ws/package.json"));
 const LLM_PORT = Number(process.env.LLM_PORT) || 3002;
 const TIMEOUT_JOB = 120 * 1000;
 
-// URL pública del gateway (la de Tailscale Funnel). Sin ella la función queda
-// apagada: el bot anda igual, y /mbot live contesta que no hay LLMs.
+// URL pública del gateway (la de Tailscale Funnel). Puede llevar una ruta
+// (https://maquina.tailnet.ts.net/motibot-llm) cuando el 443 lo comparte con
+// otros servicios. Sin ella la función queda apagada: el bot anda igual, y
+// /mbot live contesta que no hay LLMs.
 function urlPublica() {
   const url = String(process.env.LLM_PUBLIC_URL || "").trim().replace(/\/+$/, "");
-  return /^https:\/\/[^\s/]+$/.test(url) ? url : null;
+  return /^https:\/\/[^\s/]+(\/[A-Za-z0-9._-]+)*$/.test(url) ? url : null;
+}
+
+// La ruta de la URL pública ("/motibot-llm" o ""), para que el gateway la
+// reconozca si Funnel se la pasa sin recortar.
+function prefijoRuta() {
+  const url = urlPublica();
+  return url ? new URL(url).pathname.replace(/\/+$/, "") : "";
 }
 
 function urlWebSocket() {
@@ -146,6 +155,7 @@ function iniciarGateway() {
     // del .env.
     env: {
       LLM_PORT: String(LLM_PORT),
+      LLM_PREFIJO: prefijoRuta(),
       WS_NO_BUFFER_UTIL: "1",
       WS_NO_UTF_8_VALIDATE: "1",
     },

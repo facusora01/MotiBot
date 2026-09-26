@@ -29,6 +29,15 @@ const { WebSocketServer } = require("ws");
 const P = require("./llm-protocol");
 
 const PORT = Number(process.env.LLM_PORT) || 3002;
+// Ruta de la URL pública ("/motibot-llm") cuando el 443 se comparte con otros
+// servicios. Según cómo esté armado Funnel, la ruta llega con o sin ella:
+// se aceptan las dos.
+const PREFIJO = /^(\/[A-Za-z0-9._-]+)*$/.test(process.env.LLM_PREFIJO || "") ? (process.env.LLM_PREFIJO || "") : "";
+
+function esRuta(url, destino) {
+  const ruta = String(url || "").split("?")[0];
+  return ruta === destino || (PREFIJO !== "" && ruta === PREFIJO + destino);
+}
 const MAX_CONEXIONES = 50;
 const AUTH_TIMEOUT = 5000;     // tiempo para mandar el token después de conectar
 const PING_INTERVALO = 30000;  // un agente que no contesta el ping se corta
@@ -70,7 +79,7 @@ function cerrar(conn, codigo, motivo) {
 
 // ─── HTTP: solo el script del agente, para que se lo puedan bajar ────────────
 const server = http.createServer((req, res) => {
-  if (req.method === "GET" && req.url === "/motibot-agent.js" && codigoAgente) {
+  if (req.method === "GET" && esRuta(req.url, "/motibot-agent.js") && codigoAgente) {
     res.writeHead(200, {
       "Content-Type": "text/javascript; charset=utf-8",
       "X-Content-Type-Options": "nosniff",
@@ -86,10 +95,15 @@ server.requestTimeout = 10000;
 
 // perMessageDeflate apagado: nada de descomprimir lo que manda un extraño.
 const wss = new WebSocketServer({
-  server,
-  path: "/agent",
+  noServer: true,
   maxPayload: P.LIMITES.payload,
   perMessageDeflate: false,
+});
+
+// Solo se acepta el upgrade en la ruta del agente; cualquier otro se corta.
+server.on("upgrade", (req, socket, head) => {
+  if (!esRuta(req.url, "/agent")) return socket.destroy();
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
 });
 
 wss.on("connection", (ws) => {

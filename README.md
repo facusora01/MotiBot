@@ -185,9 +185,18 @@ tailscale funnel --bg 3002     # la primera vez te da un link para habilitar Fun
 tailscale funnel status        # muestra la URL: https://<maquina>.<tailnet>.ts.net
 ```
 
-Poné esa URL en `LLM_PUBLIC_URL` del `.env` y reiniciá el bot. Si el 443 de esa
-máquina ya lo usa otro servicio con `tailscale serve`, usá
-`tailscale funnel --bg --https=8443 3002` y agregá `:8443` a la URL.
+Poné esa URL en `LLM_PUBLIC_URL` del `.env` y reiniciá el bot.
+
+Si los puertos de Funnel (443, 8443, 10000) ya los usan otros servicios,
+montalo en una ruta propia sin tocar lo que ya está:
+
+```bash
+tailscale funnel --bg --https=443 --set-path=/motibot-llm http://127.0.0.1:3002
+# LLM_PUBLIC_URL=https://<maquina>.<tailnet>.ts.net/motibot-llm
+```
+
+El gateway acepta la ruta con o sin el prefijo, así que funciona recorte
+Funnel la ruta o no.
 
 **Aislamiento: el LLM solo puede chatear.**
 - El gateway corre como un proceso aparte con el modelo de permisos de Node
