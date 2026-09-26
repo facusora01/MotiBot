@@ -57,6 +57,120 @@ function shouldSendNow(sendTime, frequency, mockCurrentTime) {
     return false;
 }
 
+// ─── LLMs DE LA COMUNIDAD: SOLO CHAT ──────────────────────────────────────────
+// Estos tests son la garantía de que un LLM no puede ejecutar nada en el
+// servidor. Si alguno falla, el deploy se frena.
+function chequear(condicion, mensaje) {
+  if (condicion) console.log(`✅ ${mensaje}`);
+  else { console.error(`❌ ${mensaje}`); hasFailed = true; }
+}
+
+async function testsLlm() {
+  const fs = require("fs");
+  const path = require("path");
+  const P = require("./llm-protocol");
+  const live = require("./live");
+
+  console.log("\n--- Test 11: El protocolo solo acepta auth y reply ---");
+  const token = P.generarToken();
+  chequear(P.parsearMensajeAgente(JSON.stringify({ type: "auth", token, model: "llama3.1" })), "auth válido entra");
+  chequear(P.parsearMensajeAgente(JSON.stringify({ type: "reply", id: "0123456789abcdef", text: "hola" })), "reply válido entra");
+  const rechazados = [
+    "no soy json",
+    JSON.stringify([1, 2]),
+    JSON.stringify({ type: "exec", cmd: "ls" }),
+    JSON.stringify({ type: "shell", cmd: "ls" }),
+    JSON.stringify({ type: "file", path: "/etc/passwd" }),
+    JSON.stringify({ type: "tool_call", name: "x" }),
+    JSON.stringify({ type: "auth", token, model: "x", tools: [] }),
+    JSON.stringify({ type: "auth", token, model: "x; rm -rf /" }),
+    JSON.stringify({ type: "auth", token: "cualquiera", model: "x" }),
+    JSON.stringify({ type: "reply", id: "../../etc", text: "x" }),
+    JSON.stringify({ type: "reply", id: "0123456789abcdef", text: { $gt: 1 } }),
+    JSON.stringify({ type: "reply", id: "0123456789abcdef", text: "x", run: "ls" }),
+    JSON.stringify({ type: "reply", id: "0123456789abcdef", text: "x".repeat(20000) }),
+  ];
+  chequear(rechazados.every((r) => P.parsearMensajeAgente(r) === null), `${rechazados.length} mensajes fuera de protocolo rechazados`);
+  chequear(P.parsearIpcDelGateway({ kind: "exec", cmd: "ls" }) === null, "IPC del gateway: tipo inventado rechazado");
+  chequear(P.parsearIpcDelBot({ kind: "job", conn: 1, job: "0123456789abcdef", messages: [{ role: "tool", content: "x" }] }) === null,
+    "IPC: rol 'tool' rechazado");
+
+  console.log("\n--- Test 12: La respuesta del LLM nunca es un comando ---");
+  const peligrosos = ["/mbot stop", "@MotiBot stop", "/admin", "‮/mbot sync", "   /mbot remove", "",
+    "MotiBot: /mbot stop", "@ /mbot sync", "//@@/admin"];
+  for (const t of peligrosos) {
+    const final = P.formatearRespuesta(t, "llama3.1", "Juan");
+    chequear(!/^[\s/@]/.test(final) && live.esRespuestaLLM(final),
+      `"${t.replace(/‮/, "<RLO>")}" → "${final.split("\n")[0]}" (no arranca con / ni @)`);
+  }
+  chequear(P.formatearRespuesta("Moto: Hola! Estoy bien.", "m", "Sora").startsWith("Hola! Estoy bien."),
+    "se saca el \"Nombre:\" que el modelo pone al principio");
+  chequear(P.formatearRespuesta("*MotiBot:* Hola", "m", "Sora").startsWith("Hola"), "también con negrita");
+  chequear(!/[‪-‮⁦-⁩\u0000-\u0008]/.test(P.limpiarRespuesta("a‮b\u0007c⁦")), "caracteres invisibles y de dirección eliminados");
+  chequear(P.limpiarRespuesta("x".repeat(5000)).length <= P.LIMITES.respuesta + 1, "respuesta recortada al límite");
+
+  const esBot = (t) => /^motibot$/i.test(t);
+  const grupo = "123456789@g.us";
+  chequear(live.preguntaDelMensaje({ fromMe: true, from: grupo, body: "@MotiBot hola" }, esBot) === null,
+    "un mensaje propio del bot nunca va al LLM");
+  chequear(live.preguntaDelMensaje({ fromMe: false, from: grupo, body: "@MotiBot phrase" }, esBot) === null,
+    "\"@MotiBot phrase\" sigue siendo comando");
+  chequear(live.preguntaDelMensaje({ fromMe: false, from: grupo, body: "/mbot live off" }, esBot) === null,
+    "\"/mbot live off\" sigue siendo comando");
+
+  // Con el modo live prendido, "/mbot <pregunta>" va al LLM.
+  db.setGroupLive(grupo, 999, "test");
+  const pregunta = live.preguntaDelMensaje({ fromMe: false, from: grupo, body: "/mbot como andas" }, esBot);
+  chequear(pregunta?.pregunta === "como andas", "\"/mbot como andas\" con live prendido va al LLM");
+  chequear(live.preguntaDelMensaje({ fromMe: false, from: grupo, body: "/mbot help" }, esBot) === null,
+    "\"/mbot help\" con live prendido sigue siendo comando");
+  db.borrarGroupLive(grupo);
+  chequear(live.preguntaDelMensaje({ fromMe: false, from: grupo, body: "/mbot como andas" }, esBot) === null,
+    "con live apagado, \"/mbot como andas\" no va al LLM");
+
+  console.log("\n--- Test 13: El código del LLM no puede ejecutar nada ---");
+  const PROHIBIDO = [
+    [/require\(\s*["'](node:)?(child_process|fs|fs\/promises|vm|worker_threads|cluster|module|v8|inspector)["']\s*\)/, "módulos de ejecución/archivos"],
+    [/require\(\s*["']better-sqlite3["']\s*\)/, "acceso a la base"],
+    [/\beval\s*\(/, "eval"],
+    [/new\s+Function\s*\(/, "new Function"],
+    [/process\.(binding|dlopen|_linkedBinding)\b/, "bindings nativos"],
+    [/\bimport\s*\(/, "import dinámico"],
+    [/require\(\s*[^"'\s)]/, "require con ruta variable"],
+  ];
+  for (const archivo of ["llm-gateway.js", "llm-protocol.js", "live.js", "motibot-agent.js"]) {
+    const codigo = fs.readFileSync(path.join(__dirname, archivo), "utf8");
+    const encontrados = PROHIBIDO.filter(([re]) => re.test(codigo)).map(([, nombre]) => nombre);
+    chequear(encontrados.length === 0, `${archivo} limpio${encontrados.length ? ` (encontré: ${encontrados.join(", ")})` : ""}`);
+  }
+
+  // llm.js es el único que toca child_process: solo para lanzar el gateway
+  // (un archivo fijo), nunca exec/spawn.
+  const lanzador = fs.readFileSync(path.join(__dirname, "llm.js"), "utf8");
+  chequear(!/\b(exec|execSync|execFile|execFileSync|spawn|spawnSync)\b/.test(lanzador), "llm.js no usa exec ni spawn");
+  chequear((lanzador.match(/\bfork\(/g) || []).length === 1 && /fork\(GATEWAY_PATH,/.test(lanzador), "llm.js solo hace fork del gateway");
+  chequear(/--allow-fs-read=/.test(lanzador) && !/--allow-(child-process|worker|addons|fs-write)/.test(lanzador),
+    "el gateway se lanza sin permisos de procesos, workers, addons ni escritura");
+
+  const gw = fs.readFileSync(path.join(__dirname, "llm-gateway.js"), "utf8");
+  chequear(/process\.permission/.test(gw) && /process\.exit\(78\)/.test(gw), "el gateway se niega a correr sin sandbox");
+  chequear(/listen\(PORT, "127\.0\.0\.1"/.test(gw), "el gateway escucha solo en loopback");
+
+  // Lado del usuario: el agente se encierra solo y no le da tools al modelo.
+  const agente = fs.readFileSync(path.join(__dirname, "motibot-agent.js"), "utf8");
+  chequear(/if \(!process\.permission \|\|/.test(agente) && /"fs\.read", "fs\.write"/.test(agente),
+    "el agente se niega a correr sin sandbox");
+  chequear(!/\btools\s*:/.test(agente) && !/tool_calls/.test(agente), "el agente no le ofrece tools al modelo");
+  chequear((agente.match(/fetch\(/g) || []).length === 2 && /\/api\/chat`/.test(agente) && /\/api\/tags`/.test(agente),
+    "el agente solo llama a /api/chat y /api/tags de Ollama");
+
+  console.log("\n--- Test 14: Comandos /mbot live y /mbot llm ---");
+  await simulate("/mbot live", false, false, "Solo los admins");
+  await simulate("/mbot live", true, false, "No hay ningún LLM disponible");
+  await simulate("/mbot live off", true, false, "no estaba prendido");
+  await simulate("/mbot llm add", true, false, "por privado");
+}
+
 // ─── MOTOR DE TESTS ───────────────────────────────────────────────────────────
 async function runTests() {
   console.log("🧪 INICIANDO MASTER TEST SUITE (MODO CI/CD)...\n");
@@ -168,6 +282,8 @@ async function runTests() {
     
     if (ok1 && ok2 && !fail) console.log("✅ Intervalos calculados correctamente.");
     else { hasFailed = true; console.error("❌ Fallo en cálculo de intervalos."); }
+
+    await testsLlm();
 
   } catch (err) {
     console.error("\n❌ FALLO GLOBAL:", err.message);

@@ -146,6 +146,25 @@ db.exec(`
     mapping    TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  -- LLMs de la comunidad: uno por persona. Del token solo se guarda el hash.
+  -- owner_lid se guarda aparte porque en los grupos @lid el teléfono no viaja.
+  CREATE TABLE IF NOT EXISTS llm_agents (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_phone  TEXT UNIQUE NOT NULL,
+    owner_lid    TEXT,
+    owner_name   TEXT,
+    token_hash   TEXT UNIQUE NOT NULL,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Grupos con /mbot live prendido y qué LLM atiende en cada uno.
+  CREATE TABLE IF NOT EXISTS group_live (
+    group_id      TEXT PRIMARY KEY,
+    llm_id        INTEGER NOT NULL,
+    activated_by  TEXT,
+    activated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // ─── MIGRACIONES AUTOMÁTICAS ──────────────────────────────────────────────────
@@ -270,6 +289,7 @@ function addGroup(groupId, groupName) {
 
 function removeGroup(groupId) {
   db.prepare(`UPDATE groups SET active = 0 WHERE group_id = ?`).run(groupId);
+  db.prepare(`DELETE FROM group_live WHERE group_id = ?`).run(groupId);
 }
 
 function getActiveGroups() {
@@ -297,6 +317,7 @@ function deleteGroupCompleto(groupId) {
     db.prepare(`DELETE FROM birthdays WHERE group_id = ?`).run(groupId);
     db.prepare(`DELETE FROM custom_phrases WHERE group_id = ?`).run(groupId);
     db.prepare(`DELETE FROM market_sent_grains WHERE group_id = ?`).run(groupId);
+    db.prepare(`DELETE FROM group_live WHERE group_id = ?`).run(groupId);
     db.prepare(`DELETE FROM group_settings WHERE group_id = ?`).run(groupId);
     return db.prepare(`DELETE FROM groups WHERE group_id = ?`).run(groupId).changes > 0;
   });
@@ -840,7 +861,72 @@ function limpiarGranosEnviados(antesDeISO) {
   return db.prepare(`DELETE FROM market_sent_grains WHERE fecha < ?`).run(antesDeISO).changes;
 }
 
+// ─── LLMs DE LA COMUNIDAD ─────────────────────────────────────────────────────
+// Dar de alta de nuevo pisa el token anterior: sirve para rotarlo si se filtró.
+function guardarLlmAgent(ownerPhone, ownerLid, ownerName, tokenHash) {
+  db.prepare(`
+    INSERT INTO llm_agents (owner_phone, owner_lid, owner_name, token_hash)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(owner_phone) DO UPDATE SET
+      owner_lid = excluded.owner_lid,
+      owner_name = excluded.owner_name,
+      token_hash = excluded.token_hash,
+      created_at = CURRENT_TIMESTAMP
+  `).run(ownerPhone, ownerLid, ownerName, tokenHash);
+  return getLlmAgentPorDueno(ownerPhone);
+}
+
+function getLlmAgent(id) {
+  return db.prepare(`SELECT id, owner_phone, owner_lid, owner_name, created_at FROM llm_agents WHERE id = ?`).get(id);
+}
+
+function getLlmAgentPorHash(tokenHash) {
+  return db.prepare(`SELECT id, owner_phone, owner_lid, owner_name FROM llm_agents WHERE token_hash = ?`).get(tokenHash);
+}
+
+function getLlmAgentPorDueno(ownerPhone) {
+  return db.prepare(`SELECT id, owner_phone, owner_lid, owner_name, created_at FROM llm_agents WHERE owner_phone = ?`).get(ownerPhone);
+}
+
+// Borra el LLM y lo saca de todos los grupos donde estaba atendiendo.
+function borrarLlmAgent(ownerPhone) {
+  const borrar = db.transaction(() => {
+    const agente = getLlmAgentPorDueno(ownerPhone);
+    if (!agente) return null;
+    db.prepare(`DELETE FROM group_live WHERE llm_id = ?`).run(agente.id);
+    db.prepare(`DELETE FROM llm_agents WHERE id = ?`).run(agente.id);
+    return agente;
+  });
+  return borrar();
+}
+
+function setGroupLive(groupId, llmId, activatedBy) {
+  db.prepare(`
+    INSERT INTO group_live (group_id, llm_id, activated_by) VALUES (?, ?, ?)
+    ON CONFLICT(group_id) DO UPDATE SET
+      llm_id = excluded.llm_id,
+      activated_by = excluded.activated_by,
+      activated_at = CURRENT_TIMESTAMP
+  `).run(groupId, llmId, activatedBy);
+}
+
+function getGroupLive(groupId) {
+  return db.prepare(`SELECT * FROM group_live WHERE group_id = ?`).get(groupId);
+}
+
+function borrarGroupLive(groupId) {
+  return db.prepare(`DELETE FROM group_live WHERE group_id = ?`).run(groupId).changes > 0;
+}
+
 module.exports = {
+  guardarLlmAgent,
+  getLlmAgent,
+  getLlmAgentPorHash,
+  getLlmAgentPorDueno,
+  borrarLlmAgent,
+  setGroupLive,
+  getGroupLive,
+  borrarGroupLive,
   addGroup,
   registrarChatPrivado,
   getCarryCostos,

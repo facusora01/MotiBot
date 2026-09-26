@@ -13,6 +13,8 @@ const { getTunnelUrl } = require("./tunnel-url");
 const { getMercado, formatearActualizacion, fechaPizarraISO } = require("./mercado");
 const alertas = require("./alertas");
 const historia = require("./historia");
+const live = require("./live");
+const llm = require("./llm");
 
 const HORA_ENVIO = process.env.HORA_ENVIO || "08:00";
 
@@ -777,6 +779,12 @@ async function registrarIdsDelBot() {
 // que volverse "/idea X" y no "/mbot idea X".
 const COMANDOS_RAIZ = ["new", "add", "birthday", "idea", "ideas", "admin"];
 
+// ¿Ese "@<token>" nos nombra a nosotros?
+function esIdDelBot(token) {
+  const soloDigitos = String(token || "").replace(/\D/g, "");
+  return /^motibot$/i.test(token) || Boolean(soloDigitos && idsDelBot.has(soloDigitos));
+}
+
 // Devuelve el comando equivalente, o null si el mensaje no nos arroba. Exigimos
 // que la mención ABRA el mensaje: así un "gracias @MotiBot" en medio de una
 // charla no dispara nada, y la intención de darle una orden es inequívoca.
@@ -785,10 +793,7 @@ function comandoDeArroba(message) {
   const m = body.match(/^@(\S+)\s*([\s\S]*)$/);
   if (!m) return null;
 
-  const token = m[1];
-  const soloDigitos = token.replace(/\D/g, "");
-  const esElBot = /^motibot$/i.test(token) || (soloDigitos && idsDelBot.has(soloDigitos));
-  if (!esElBot) return null;
+  if (!esIdDelBot(m[1])) return null;
 
   const resto = (m[2] || "").trim();
   if (!resto) return "/mbot help";
@@ -798,8 +803,34 @@ function comandoDeArroba(message) {
   return COMANDOS_RAIZ.includes(primera) ? `/${resto}` : `/mbot ${resto}`;
 }
 
+// Pregunta para el LLM del modo live. Espera la respuesta sin el timeout de
+// REPLY_TIMEOUT (un LLM tarda más que un comando y no es señal de página
+// colgada); solo el envío final lleva timeout.
+async function responderLive(message, pedido) {
+  const msgId = message.id?._serialized || message.id?.id;
+  if (yaProcesado(msgId)) return;
+
+  try {
+    const texto = await live.responder(message, client, pedido);
+    if (!texto) return;
+    await conTimeout(message.reply(texto, undefined, { linkPreview: false }), REPLY_TIMEOUT, "respuesta live");
+  } catch (error) {
+    console.error("❌ Error respondiendo en modo live:", error.message);
+  }
+}
+
 async function processMessage(message) {
   if (message.timestamp && message.timestamp < ARRANQUE_TS) return;
+
+  // Lo que mandamos con un LLM jamás se procesa: ni como comando ni como
+  // pregunta. (Igual no podría: nunca empieza con "/" ni "@", ver
+  // llm-protocol.js.)
+  if (message.fromMe && live.esRespuestaLLM(message.body)) return;
+
+  // Modo live: "@MotiBot <pregunta>" o un reply a una respuesta del LLM. Va
+  // antes que comandoDeArroba, que convertiría la pregunta en "/mbot ...".
+  const pedidoLive = live.preguntaDelMensaje(message, esIdDelBot);
+  if (pedidoLive) return responderLive(message, pedidoLive);
 
   // Si nos arrobaron, reescribimos el body al comando equivalente y de ahí en
   // más el mensaje viaja como cualquier otro: todo lo de abajo (y commands.js)
@@ -838,7 +869,7 @@ async function processMessage(message) {
     // handleCommand vuelve a filtrar con la lista fina; acá solo evitamos
     // resolver el contacto (que puede pegarle a la página) para los mensajes
     // que seguro no son para nosotros.
-    const PRIVADOS_OK = ["/mbot phrase", "/mbot stop", "/mbot help", "/mbot mercado", "/mbot phrase", "/mbot frases", "/mbot alerta", "/mbot alertas", "/mbot precio", "/mbot carry", "/mbot granos"];
+    const PRIVADOS_OK = ["/mbot phrase", "/mbot stop", "/mbot help", "/mbot mercado", "/mbot phrase", "/mbot frases", "/mbot alerta", "/mbot alertas", "/mbot precio", "/mbot carry", "/mbot granos", "/mbot llm"];
     const okEnPrivado = PRIVADOS_OK.some((c) => lowerBody === c || lowerBody.startsWith(c + " "));
     if (!esGrupo && !okEnPrivado && !(await esSuperAdmin(message))) return;
 
@@ -1428,6 +1459,10 @@ app.get("/health", (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`🌐 Servidor Web activo en puerto ${PORT}`));
+
+// Gateway de los LLMs de la comunidad: proceso aparte y encerrado (ver llm.js).
+// No depende de WhatsApp: los agentes se pueden conectar mientras el bot carga.
+llm.iniciarGateway();
 
 console.log("🚀 Iniciando MotiBot...");
 

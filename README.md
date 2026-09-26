@@ -18,6 +18,11 @@ MotivationBot/
 ├── session-backup.js   ← Backup/restore de la sesión de WhatsApp
 ├── tunnel-url.js        ← Lee la URL vigente del túnel de Cloudflare
 ├── tunnel.sh            ← Wrapper de cloudflared (persiste la URL en .tunnel_url)
+├── live.js              ← /mbot live y /mbot llm (LLMs de la comunidad)
+├── llm.js               ← Lanza el gateway encerrado y le habla por IPC
+├── llm-gateway.js       ← Proceso aislado que recibe a los agentes por WebSocket
+├── llm-protocol.js      ← Protocolo (solo texto) y limpieza de respuestas
+├── motibot-agent.js     ← Agente que corre cada usuario al lado de su Ollama
 ├── encontrar-grupo.js  ← Script opcional para listar IDs de grupo (no hace
 │                          falta para el uso normal: el bot se suma a un grupo
 │                          con /mbot add, sin necesidad del ID a mano)
@@ -99,6 +104,19 @@ frase de regalo (del equipo si el modo custom está activo).
 Al panel de ideas también se llega desde el botón *💡 Ideas* del listado de
 frases; la llave es la misma para los dos.
 
+**LLM en vivo:**
+- `/mbot llm add` (por privado): registra tu LLM y te da un token para el agente.
+  Repetirlo genera un token nuevo y anula el anterior.
+- `/mbot llm` / `/mbot llm remove` (por privado): ver el estado o darlo de baja.
+- `/mbot live` (admins, en un grupo): prende el modo live con el LLM de quien
+  lo pide o, si no tiene, con el de otro miembro del grupo que esté conectado.
+  Si no hay ninguno, avisa que no hay LLM disponible.
+- `/mbot live off` (admins): lo apaga.
+
+Con el modo prendido, el bot contesta con el LLM cuando lo arroban
+(`@MotiBot tu pregunta`) o cuando le responden una de sus respuestas. Los
+comandos (`@MotiBot phrase`, `/mbot ...`) siguen funcionando igual.
+
 **Info:**
 - `/mbot status`, `/mbot time`, `/mbot help`
 
@@ -153,6 +171,50 @@ túnel reinicie solo:
 pm2 start ./tunnel.sh --name cloudflare-tunnel --interpreter bash -- 3001
 ```
 
+### LLMs de la comunidad (Tailscale Funnel)
+
+Cada usuario corre `motibot-agent.js` en su PC, al lado de su Ollama. El
+agente abre una conexión saliente y cifrada (`wss://`) al gateway del bot, así
+que nadie abre puertos en su casa. El gateway escucha solo en `127.0.0.1` y lo
+publica Tailscale Funnel, con URL fija y TLS, sin necesidad de dominio.
+
+Una sola vez, en el servidor:
+
+```bash
+tailscale funnel --bg 3002     # la primera vez te da un link para habilitar Funnel
+tailscale funnel status        # muestra la URL: https://<maquina>.<tailnet>.ts.net
+```
+
+Poné esa URL en `LLM_PUBLIC_URL` del `.env` y reiniciá el bot. Si el 443 de esa
+máquina ya lo usa otro servicio con `tailscale serve`, usá
+`tailscale funnel --bg --https=8443 3002` y agregá `:8443` a la URL.
+
+**Aislamiento: el LLM solo puede chatear.**
+- El gateway corre como un proceso aparte con el modelo de permisos de Node
+  (`--permission`): no puede lanzar procesos, crear workers, cargar addons ni
+  escribir archivos, y no recibe las variables del `.env`. Si arranca sin
+  sandbox, se niega a atender. Necesita Node 20 o más nuevo; si el Node no
+  tiene permisos, el gateway no se levanta.
+- El protocolo acepta exactamente dos mensajes del agente (`auth` y `reply`,
+  con texto). Cualquier otra cosa corta la conexión.
+- La respuesta del LLM solo termina en un reply al grupo, limpia de caracteres
+  invisibles, recortada, sin poder empezar con `/` ni `@` y con la firma del
+  modelo al final: nunca se lee como comando. Los mensajes propios del bot nunca van al LLM.
+- Al LLM solo le llega un prompt fijo, el nombre de quien pregunta, la
+  pregunta y, si es un reply, la respuesta anterior. Nada del servidor.
+- `npm test` falla si el código del LLM importa `child_process`, `fs`, `vm` y
+  similares, o si el gateway se lanza con más permisos.
+
+**Del lado del usuario: su PC tampoco se toca.**
+- El agente se corre con `node --permission motibot-agent.js ...` y se niega a
+  arrancar sin ese encierro: no puede leer ni escribir archivos, lanzar
+  programas, crear workers ni cargar addons. Así, ni un servidor comprometido
+  ni un agente adulterado pueden hacer nada en esa PC.
+- No le ofrece herramientas (tools) al modelo y no ejecuta nada de lo que
+  conteste. Solo habla con `POST /api/chat` de un Ollama en `127.0.0.1`.
+- Valida lo que llega del servidor (solo `ready` y `job` con chat) y tiene un
+  tope de preguntas por minuto (`--por-minuto`, 10 por defecto).
+
 ### Deploy automático
 
 `.github/workflows/deploy.yml` hace push→SSH→`git reset --hard`→reinstala→
@@ -169,7 +231,8 @@ npm test
 ```
 
 Corre `tests.js`: simula comandos contra un grupo mock y valida permisos,
-límites de frases y el cálculo de horarios/frecuencia.
+límites de frases, el cálculo de horarios/frecuencia y el aislamiento de los
+LLMs (protocolo, respuestas y código prohibido).
 
 ---
 

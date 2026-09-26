@@ -5,6 +5,7 @@ const alertas = require("./alertas");
 const matba = require("./matba");
 const carry = require("./carry");
 const historia = require("./historia");
+const live = require("./live");
 
 const { exec } = require("child_process");
 
@@ -106,6 +107,11 @@ Acá tenés todo lo que puedo hacer por vos y tu equipo:
 ▸ \`/mbot precio soja\` — Dónde cae el precio de hoy contra su historia
 ▸ \`/mbot carry soja\` — Vender hoy o guardar, con los números a la vista
 ▸ \`/mbot granos\` — *Cómo se usa todo esto, explicado*
+
+*🧠 LLM en vivo:*
+▸ \`/mbot live\` — Charlar con el LLM de alguien del grupo (admins lo prenden)
+▸ \`/mbot live off\` — Apagarlo
+▸ \`/mbot llm add\` — Sumar tu propio LLM (Ollama), por privado
 
 *💡 Información y Ansiedad:*
 ▸ \`/mbot time\` — ⏳ Cuenta regresiva para activación de librería custom
@@ -570,7 +576,7 @@ async function handlePrivateCommand(message) {
 
 // Comandos que una persona cualquiera puede usar en el privado del bot. El
 // resto se sigue ignorando en silencio: el privado no es una consola.
-const PRIVADO_PREFIJOS = ["/mbot help", "/mbot mercado", "/mbot phrase", "/mbot frases", "/mbot alerta", "/mbot alertas", "/mbot precio", "/mbot carry", "/mbot granos"];
+const PRIVADO_PREFIJOS = ["/mbot help", "/mbot mercado", "/mbot phrase", "/mbot frases", "/mbot alerta", "/mbot alertas", "/mbot precio", "/mbot carry", "/mbot granos", "/mbot llm"];
 
 function empiezaConAlguno(lowerBody, prefijos) {
   return prefijos.some((c) => lowerBody === c || lowerBody.startsWith(c + " "));
@@ -755,6 +761,11 @@ Acá podés tener lo tuyo, sin molestar a ningún grupo:
 ▸ \`/mbot phrase on\` — Recibir la frase del día todos los días acá
 ▸ \`/mbot phrase off\` — Dejar de recibirla
 
+*🧠 Tu LLM:*
+▸ \`/mbot llm add\` — Sumar tu LLM (Ollama) para usarlo en tus grupos
+▸ \`/mbot llm\` — Ver si está conectado
+▸ \`/mbot llm remove\` — Darlo de baja
+
 _El aviso de una alerta llega solo acá: nadie más lo ve._
 `.trim();
 
@@ -820,6 +831,8 @@ async function handleCommand(message, client) {
       // "/mbot phrase" a secas tiene que seguir sin contestar.
       "/mbot phrase on", "/mbot phrase off", "/mbot frases", "/mbot frases on", "/mbot frases off",
       "/mbot help", "/mbot add", "/mbot remove", "/mbot stop", "/mbot sync",
+      // El LLM en vivo no es parte de lo motivacional: se prende aparte.
+      "/mbot live", "/mbot llm",
     ];
     if (!esChatPrivado(message) && !db.isPhrasesEnabled(groupId) &&
         !empiezaConAlguno(lowerBody, SOLO_MERCADO_OK)) {
@@ -1180,6 +1193,16 @@ async function handleCommand(message, client) {
 
     if (!subcommand) {
       return message.reply('❓ ¡Me dejaste por la mitad! Usá `/mbot help` para ver cómo pedirme las cosas.');
+    }
+
+    // --- LLMs de la comunidad (ver live.js) ---
+    if (subcommand === "llm") {
+      if (parts.length > 3) return message.reply("❓ Usá `/mbot llm`, `/mbot llm add` o `/mbot llm remove`.");
+      return live.comandoLlm(message, client, arg);
+    }
+    if (subcommand === "live") {
+      if (parts.length > 3) return message.reply("❓ Usá `/mbot live` para prenderlo o `/mbot live off` para apagarlo.");
+      return live.comandoLive(message, client, arg);
     }
 
     // --- guía de granos ---
@@ -2309,4 +2332,8 @@ async function handleReaction(reaction, client) {
   }
 }
 
-module.exports = { handleCommand, clearAdminCache, handleReaction, sincronizarVotos, esSuperAdmin };
+module.exports = {
+  handleCommand, clearAdminCache, handleReaction, sincronizarVotos, esSuperAdmin,
+  // Para live.js
+  isAdmin, resolverNumero, participantesDelGrupo, nombreDeMensaje,
+};
