@@ -111,6 +111,7 @@ Acá tenés todo lo que puedo hacer por vos y tu equipo:
 *🧠 LLM en vivo:*
 ▸ \`/mbot live\` — Charlar con el LLM de alguien del grupo (admins lo prenden)
 ▸ \`/mbot live off\` — Apagarlo
+▸ \`/mbot live reset\` — Que se olvide de lo que se charló
 ▸ \`/mbot llm add\` — Sumar tu propio LLM (Ollama), por privado
 
 *💡 Información y Ansiedad:*
@@ -1201,7 +1202,7 @@ async function handleCommand(message, client) {
       return live.comandoLlm(message, client, arg);
     }
     if (subcommand === "live") {
-      if (parts.length > 3) return message.reply("❓ Usá `/mbot live` para prenderlo o `/mbot live off` para apagarlo.");
+      if (parts.length > 3) return message.reply("❓ Usá `/mbot live`, `/mbot live off` o `/mbot live reset`.");
       return live.comandoLive(message, client, arg);
     }
 

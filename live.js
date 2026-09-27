@@ -74,6 +74,59 @@ function estaActivo(groupId) {
   return Boolean(db.getGroupLive(groupId));
 }
 
+// ─── MEMORIA DE LA CHARLA ────────────────────────────────────────────────────
+// Por grupo, las últimas idas y vueltas del modo live: solo lo que le
+// preguntaron al bot y lo que contestó, nunca el resto del chat. Vive en
+// memoria (se pierde si el bot reinicia) y es de UN LLM: si cambia, arranca
+// de cero, para que la PC nueva no reciba lo que se habló con la anterior.
+const MEMORIA = {
+  vueltas: 10,
+  ventanaMs: 60 * 60 * 1000,
+  caracteres: 8000,
+};
+const memorias = new Map(); // groupId -> { llmId, lista: [{ pregunta, respuesta, ts }] }
+
+function recuerdos(groupId, llmId) {
+  const m = memorias.get(groupId);
+  if (!m || m.llmId !== llmId) return [];
+
+  const ahora = Date.now();
+  m.lista = m.lista.filter((r) => ahora - r.ts < MEMORIA.ventanaMs).slice(-MEMORIA.vueltas);
+
+  // De la más nueva a la más vieja, mientras entren en el tope de caracteres.
+  const out = [];
+  let total = 0;
+  for (let i = m.lista.length - 1; i >= 0; i--) {
+    const largo = m.lista[i].pregunta.length + m.lista[i].respuesta.length;
+    if (total + largo > MEMORIA.caracteres) break;
+    total += largo;
+    out.unshift(m.lista[i]);
+  }
+  return out;
+}
+
+function recordar(groupId, llmId, pregunta, respuesta) {
+  let m = memorias.get(groupId);
+  if (!m || m.llmId !== llmId) {
+    m = { llmId, lista: [] };
+    memorias.set(groupId, m);
+  }
+  m.lista.push({ pregunta, respuesta, ts: Date.now() });
+  if (m.lista.length > MEMORIA.vueltas) m.lista.shift();
+}
+
+function olvidar(groupId) {
+  memorias.delete(groupId);
+}
+
+setInterval(() => {
+  const limite = Date.now() - MEMORIA.ventanaMs;
+  for (const [groupId, m] of memorias) {
+    m.lista = m.lista.filter((r) => r.ts >= limite);
+    if (!m.lista.length) memorias.delete(groupId);
+  }
+}, 10 * 60 * 1000).unref();
+
 // Si el mensaje es para el LLM, devuelve { pregunta, citado }; si no, null.
 // esIdDelBot(user) viene de index.js, que sabe con qué ids nos arroban.
 function preguntaDelMensaje(message, esIdDelBot) {
@@ -123,6 +176,7 @@ async function responder(message, client, { pregunta, citado }) {
   const info = llm.infoConectado(live.llm_id);
   if (!info) {
     db.borrarGroupLive(groupId);
+    olvidar(groupId);
     return "🔌 El LLM que estaba usando se desconectó, así que apagué el modo live.\n\n" +
       "_Un admin lo puede volver a prender con_ `/mbot live`.";
   }
@@ -143,16 +197,33 @@ async function responder(message, client, { pregunta, citado }) {
   gruposPensando.add(groupId);
   try {
     const nombre = P.limpiarRespuesta(await cmd().nombreDeMensaje(client, message)).replace(/\s+/g, " ").slice(0, 60);
+    const turno = `(Te escribe ${nombre || "alguien del grupo"})\n${pregunta}`;
     const mensajes = [{ role: "system", content: SISTEMA }];
-    if (citado) mensajes.push({ role: "assistant", content: citado.slice(0, P.LIMITES.contenidoPorMensaje) });
-    mensajes.push({ role: "user", content: `(Te escribe ${nombre || "alguien del grupo"})\n${pregunta}` });
+
+    // La memoria solo va a agentes que la soportan: los viejos rechazan jobs
+    // de más de 4 mensajes.
+    const conMemoria = (info.version || 1) >= P.VERSION_MEMORIA;
+    if (conMemoria) {
+      for (const r of recuerdos(groupId, live.llm_id)) {
+        mensajes.push({ role: "user", content: r.pregunta }, { role: "assistant", content: r.respuesta });
+      }
+    }
+    // La respuesta citada, si no está ya en la memoria.
+    const recortado = citado ? citado.slice(0, P.LIMITES.contenidoPorMensaje) : null;
+    if (recortado && !mensajes.some((m) => m.role === "assistant" && m.content === recortado)) {
+      mensajes.push({ role: "assistant", content: recortado });
+    }
+    mensajes.push({ role: "user", content: turno });
 
     const texto = await llm.preguntar(live.llm_id, mensajes);
-    return P.formatearRespuesta(texto, info.model, info.owner_name);
+    const final = P.formatearRespuesta(texto, info.model, info.owner_name);
+    if (conMemoria) recordar(groupId, live.llm_id, turno, textoDeRespuesta(final));
+    return final;
   } catch (e) {
     console.warn(`⚠️ [live] El LLM #${live.llm_id} no respondió en ${groupId}:`, e.message);
     if (e.message === "desconectado") {
       db.borrarGroupLive(groupId);
+      olvidar(groupId);
       return "🔌 El LLM se desconectó mientras pensaba, así que apagué el modo live.";
     }
     if (e.message === "timeout") return "⌛ El LLM tardó demasiado en contestar. Probá de nuevo en un rato.";
@@ -267,16 +338,24 @@ async function comandoLive(message, client, arg) {
   if (!group || !group.active) {
     return message.reply("❌ ¡Todavía no me adoptaron en este equipo!\nAlguien con permisos tiene que usar `/mbot add`.");
   }
-  if (arg && arg !== "off") return message.reply("❓ Usá `/mbot live` para prenderlo o `/mbot live off` para apagarlo.");
+  if (arg && arg !== "off" && arg !== "reset") {
+    return message.reply("❓ Usá `/mbot live` para prenderlo, `/mbot live off` para apagarlo o `/mbot live reset` para que me olvide de la charla.");
+  }
 
   if (!(await cmd().isAdmin(message, client))) {
-    return message.reply("🔒 Solo los admins pueden prender o apagar el modo live.");
+    return message.reply("🔒 Solo los admins pueden manejar el modo live.");
   }
 
   if (arg === "off") {
+    olvidar(groupId);
     return message.reply(
       db.borrarGroupLive(groupId) ? "⚪ Modo live apagado. Vuelvo a ser el MotiBot de siempre." : "⚪ El modo live no estaba prendido."
     );
+  }
+
+  if (arg === "reset") {
+    olvidar(groupId);
+    return message.reply("🧹 Listo, me olvidé de todo lo que charlamos. Arrancamos de cero.");
   }
 
   const actual = db.getGroupLive(groupId);
@@ -318,17 +397,25 @@ async function comandoLive(message, client, arg) {
   if (!elegido) return message.reply(sinLlm);
 
   db.setGroupLive(groupId, elegido.id, ids.phone || ids.lid);
+  olvidar(groupId);
   const dueno = elegido.owner_name || "alguien del grupo";
+  const memoria = (elegido.version || 1) >= P.VERSION_MEMORIA
+    ? `🧩 Me acuerdo de las últimas ${MEMORIA.vueltas} preguntas y respuestas de la última hora. ` +
+      `\`/mbot live reset\` para que me olvide.\n`
+    : `🧩 Sin memoria: cada pregunta va sola (el agente de ${dueno} es una versión vieja).\n`;
   return message.reply(
     `🟢 *Modo live activado*\n\n` +
     `🧠 Modelo: *${elegido.model}* (LLM de ${dueno})\n\n` +
     `Escribime \`@MotiBot tu pregunta\` o \`/mbot tu pregunta\`, o respondé a una de mis respuestas, y te contesto.\n\n` +
-    `👀 Lo que me escriban así se procesa en la PC de ${dueno}.\n` +
+    memoria +
+    `👀 Lo que me escriban así (y lo que recuerdo) se procesa en la PC de ${dueno}.\n` +
     `_Para apagarlo:_ \`/mbot live off\``
   );
 }
 
 module.exports = {
+  // Para tests
+  _memoria: { recuerdos, recordar, olvidar, MEMORIA },
   esRespuestaLLM,
   preguntaDelMensaje,
   responder,

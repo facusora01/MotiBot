@@ -44,13 +44,21 @@ if (!process.permission || ["child", "worker", "fs.read", "fs.write"].some(tiene
 
 const SERVIDOR_POR_DEFECTO = "__MOTIBOT_SERVER__";
 
+// Versión del agente. La 2 recibe la memoria de la charla (varias idas y
+// vueltas por pregunta).
+const VERSION = 2;
+
 const LIMITES = {
-  mensajesPorJob: 4,
+  mensajesPorJob: 24,
   contenidoPorMensaje: 2000,
+  contenidoPorJob: 12000,
   respuesta: 2000,
-  entrante: 16 * 1024,
+  entrante: 48 * 1024,
 };
 const TIMEOUT_OLLAMA = 110 * 1000;
+// Ventana de contexto que se le pide a Ollama: entra la memoria completa y en
+// una placa de 8 GB sigue cabiendo junto con un modelo de 8B.
+const CONTEXTO = 8192;
 const ROLES = ["system", "user", "assistant"];
 
 function leerArgs(argv) {
@@ -90,19 +98,43 @@ try { hostOllama = new URL(ollama).hostname; } catch (e) { salir("La URL de Olla
 if (!["127.0.0.1", "localhost", "[::1]"].includes(hostOllama)) salir("Ollama tiene que correr en esta PC (127.0.0.1).");
 
 // ─── OLLAMA ──────────────────────────────────────────────────────────────────
-async function preguntarAOllama(mensajes) {
-  const res = await fetch(`${ollama}/api/chat`, {
+// Los modelos que "piensan" antes de contestar (qwen3, deepseek-r1...) se
+// gastarían el límite de tokens razonando y la respuesta llegaría vacía o
+// tarde: se les apaga. Los que no piensan rechazan la opción; entonces se
+// pide sin ella y se recuerda para las próximas.
+let modeloSinThink = false;
+
+function llamarChat(mensajes, apagarThink) {
+  const cuerpo = {
+    model: modelo,
+    messages: mensajes,
+    stream: false,
+    options: { num_predict: 512, num_ctx: CONTEXTO },
+  };
+  if (apagarThink) cuerpo.think = false;
+  // Sin "tools": el modelo solo puede contestar texto.
+  return fetch(`${ollama}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    // Sin "tools": el modelo solo puede contestar texto.
-    body: JSON.stringify({ model: modelo, messages: mensajes, stream: false, options: { num_predict: 512 } }),
+    body: JSON.stringify(cuerpo),
     signal: AbortSignal.timeout(TIMEOUT_OLLAMA),
   });
+}
+
+async function preguntarAOllama(mensajes) {
+  let res = await llamarChat(mensajes, !modeloSinThink);
+  if (!res.ok && !modeloSinThink && res.status === 400) {
+    const detalle = await res.text().catch(() => "");
+    if (!/think/i.test(detalle)) throw new Error("Ollama respondió 400");
+    modeloSinThink = true;
+    res = await llamarChat(mensajes, false);
+  }
   if (!res.ok) throw new Error(`Ollama respondió ${res.status}`);
   const data = await res.json();
   const texto = data?.message?.content;
   if (typeof texto !== "string") throw new Error("Ollama no devolvió texto");
-  return texto.slice(0, LIMITES.respuesta);
+  // Por si el razonamiento igual viene pegado en el texto.
+  return texto.replace(/<think>[\s\S]*?<\/think>/g, "").trim().slice(0, LIMITES.respuesta);
 }
 
 async function chequearOllama() {
@@ -137,7 +169,8 @@ function parsearDelServidor(raw) {
     if (typeof msg.id !== "string" || !/^[a-f0-9]{16}$/.test(msg.id)) return null;
     const ok = Array.isArray(msg.messages) && msg.messages.length > 0 && msg.messages.length <= LIMITES.mensajesPorJob &&
       msg.messages.every((m) => esObjetoPlano(m) && Object.keys(m).length === 2 &&
-        ROLES.includes(m.role) && typeof m.content === "string" && m.content.length <= LIMITES.contenidoPorMensaje);
+        ROLES.includes(m.role) && typeof m.content === "string" && m.content.length <= LIMITES.contenidoPorMensaje) &&
+      msg.messages.reduce((total, m) => total + m.content.length, 0) <= LIMITES.contenidoPorJob;
     if (!ok) return null;
     return { type: "job", id: msg.id, messages: msg.messages.map((m) => ({ role: m.role, content: m.content })) };
   }
@@ -163,7 +196,7 @@ function conectar() {
   const ws = new WebSocket(servidor);
 
   ws.addEventListener("open", () => {
-    ws.send(JSON.stringify({ type: "auth", token, model: modelo }));
+    ws.send(JSON.stringify({ type: "auth", token, model: modelo, v: VERSION }));
   });
 
   ws.addEventListener("message", async (evento) => {

@@ -132,7 +132,7 @@ wss.on("connection", (ws) => {
       if (!authPermitido()) return cerrar(conn, CIERRE.lleno, "demasiados intentos");
       c.estado = "validando";
       // El token no sale de acá: al bot le llega solo su hash.
-      return aviso({ kind: "auth", conn, hash: P.hashToken(msg.token), model: msg.model });
+      return aviso({ kind: "auth", conn, hash: P.hashToken(msg.token), model: msg.model, v: msg.v });
     }
 
     if (c.estado === "ok" && msg.type === "reply" && c.jobs.has(msg.id)) {

@@ -91,6 +91,12 @@ async function testsLlm() {
     JSON.stringify({ type: "reply", id: "0123456789abcdef", text: "x".repeat(20000) }),
   ];
   chequear(rechazados.every((r) => P.parsearMensajeAgente(r) === null), `${rechazados.length} mensajes fuera de protocolo rechazados`);
+  chequear(P.parsearMensajeAgente(JSON.stringify({ type: "auth", token, model: "x", v: 2 }))?.v === 2, "auth con versión 2 entra");
+  chequear(P.parsearMensajeAgente(JSON.stringify({ type: "auth", token, model: "x" }))?.v === 1, "auth sin versión = agente v1");
+  chequear(["2", 0, 101, 1.5, null].every((v) => P.parsearMensajeAgente(JSON.stringify({ type: "auth", token, model: "x", v })) === null),
+    "versiones inválidas rechazadas");
+  const largo = (n) => Array.from({ length: n }, () => ({ role: "user", content: "x".repeat(1000) }));
+  chequear(P.validarMensajesJob(largo(12)) && !P.validarMensajesJob(largo(13)), "tope de caracteres por job (12.000)");
   chequear(P.parsearIpcDelGateway({ kind: "exec", cmd: "ls" }) === null, "IPC del gateway: tipo inventado rechazado");
   chequear(P.parsearIpcDelBot({ kind: "job", conn: 1, job: "0123456789abcdef", messages: [{ role: "tool", content: "x" }] }) === null,
     "IPC: rol 'tool' rechazado");
@@ -127,6 +133,23 @@ async function testsLlm() {
   db.borrarGroupLive(grupo);
   chequear(live.preguntaDelMensaje({ fromMe: false, from: grupo, body: "/mbot como andas" }, esBot) === null,
     "con live apagado, \"/mbot como andas\" no va al LLM");
+
+  console.log("\n--- Test 12b: Memoria del modo live ---");
+  const { recuerdos, recordar, olvidar, MEMORIA } = live._memoria;
+  const g = "memoria-test@g.us";
+  for (let i = 1; i <= 12; i++) recordar(g, 7, `pregunta ${i}`, `respuesta ${i}`);
+  const r = recuerdos(g, 7);
+  chequear(r.length === MEMORIA.vueltas && r[0].pregunta === "pregunta 3" && r.at(-1).pregunta === "pregunta 12",
+    `guarda las últimas ${MEMORIA.vueltas} idas y vueltas`);
+  chequear(recuerdos(g, 8).length === 0, "otro LLM no recibe la memoria del anterior");
+  recordar(g, 8, "nueva", "charla");
+  chequear(recuerdos(g, 8).length === 1 && recuerdos(g, 7).length === 0, "al cambiar de LLM la memoria arranca de cero");
+  olvidar(g);
+  for (let i = 0; i < 6; i++) recordar(g, 7, "p".repeat(900), "r".repeat(900));
+  const total = recuerdos(g, 7).reduce((t, x) => t + x.pregunta.length + x.respuesta.length, 0);
+  chequear(total <= MEMORIA.caracteres, `tope de caracteres de memoria (${total} ≤ ${MEMORIA.caracteres})`);
+  olvidar(g);
+  chequear(recuerdos(g, 7).length === 0, "olvidar borra todo");
 
   console.log("\n--- Test 13: El código del LLM no puede ejecutar nada ---");
   const PROHIBIDO = [

@@ -114,8 +114,15 @@ frases; la llave es la misma para los dos.
 - `/mbot live off` (admins): lo apaga.
 
 Con el modo prendido, el bot contesta con el LLM cuando lo arroban
-(`@MotiBot tu pregunta`) o cuando le responden una de sus respuestas. Los
-comandos (`@MotiBot phrase`, `/mbot ...`) siguen funcionando igual.
+(`@MotiBot tu pregunta`), cuando le escriben `/mbot <pregunta>` o cuando le
+responden una de sus respuestas. Los comandos (`@MotiBot phrase`,
+`/mbot help`...) siguen funcionando igual.
+
+**Memoria:** en cada grupo recuerda las últimas 10 preguntas y respuestas de
+la última hora (solo lo que se le preguntó al bot, nunca el resto del chat).
+Vive en la memoria del proceso: se borra con `/mbot live off`, con
+`/mbot live reset` (admins), al cambiar de LLM o si el bot reinicia. Solo la
+reciben los agentes v2 en adelante; los viejos siguen andando sin memoria.
 
 **Info:**
 - `/mbot status`, `/mbot time`, `/mbot help`

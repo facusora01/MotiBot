@@ -43,7 +43,7 @@ let gateway = null;
 let reintentos = 0;
 let apagado = false;
 
-const conexiones = new Map(); // conn -> { llmId, model, jobActual }
+const conexiones = new Map(); // conn -> { llmId, model, version, jobActual }
 const porLlm = new Map();     // llmId -> conn
 const jobs = new Map();       // jobId -> { conn, resolve, reject, timer }
 
@@ -80,7 +80,7 @@ function enviarAlGateway(msg) {
 let rechazosSinLoguear = 0;
 let ultimoLogRechazo = 0;
 
-function manejarAuth({ conn, hash, model }) {
+function manejarAuth({ conn, hash, model, v }) {
   const agente = db.getLlmAgentPorHash(hash);
   if (!agente) {
     rechazosSinLoguear++;
@@ -99,10 +99,10 @@ function manejarAuth({ conn, hash, model }) {
     olvidarConexion(anterior);
   }
 
-  conexiones.set(conn, { llmId: agente.id, model, jobActual: null });
+  conexiones.set(conn, { llmId: agente.id, model, version: v, jobActual: null });
   porLlm.set(agente.id, conn);
   enviarAlGateway({ kind: "authResult", conn, ok: true });
-  console.log(`🧠 [llm] Conectado el LLM de ${agente.owner_name || agente.owner_phone} (${model}).`);
+  console.log(`🧠 [llm] Conectado el LLM de ${agente.owner_name || agente.owner_phone} (${model}, agente v${v}).`);
 }
 
 function manejarReply({ conn, job, text, error }) {
@@ -212,7 +212,7 @@ function conectados() {
   for (const [llmId, conn] of porLlm) {
     const agente = db.getLlmAgent(llmId);
     const c = conexiones.get(conn);
-    if (agente && c) lista.push({ ...agente, model: c.model });
+    if (agente && c) lista.push({ ...agente, model: c.model, version: c.version });
   }
   return lista;
 }
@@ -222,7 +222,7 @@ function infoConectado(llmId) {
   const c = conn && conexiones.get(conn);
   if (!c) return null;
   const agente = db.getLlmAgent(llmId);
-  return agente ? { ...agente, model: c.model } : null;
+  return agente ? { ...agente, model: c.model, version: c.version } : null;
 }
 
 function ocupado(llmId) {

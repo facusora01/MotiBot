@@ -12,10 +12,16 @@ const LIMITES = {
   token: 128,
   respuesta: 1500,     // caracteres que llegan al grupo
   pregunta: 1000,      // caracteres que se le mandan al LLM
-  mensajesPorJob: 4,
+  mensajesPorJob: 24,       // sistema + memoria (10 idas y vueltas) + pregunta
   contenidoPorMensaje: 2000,
+  contenidoPorJob: 12000,   // suma de todos los mensajes de un job
   codigoAgente: 200 * 1024,
 };
+
+// Versión del agente a partir de la cual recibe la memoria de la charla. Los
+// agentes viejos no mandan versión (= 1) y aceptan como mucho 4 mensajes por
+// job: a esos se les sigue mandando solo la pregunta.
+const VERSION_MEMORIA = 2;
 
 const PREFIJO_TOKEN = "mbk_";
 const RE_TOKEN = /^mbk_[A-Za-z0-9_-]{43}$/;
@@ -53,8 +59,12 @@ function esConn(x) {
 
 // ─── AGENTE → GATEWAY (WebSocket) ────────────────────────────────────────────
 // Dos tipos y ninguno más:
-//   { type: "auth",  token, model }
+//   { type: "auth",  token, model, v? }   (v = versión del agente, 1 si falta)
 //   { type: "reply", id, text }   |   { type: "reply", id, error: true }
+function esVersion(v) {
+  return Number.isInteger(v) && v >= 1 && v <= 100;
+}
+
 function parsearMensajeAgente(raw) {
   if (typeof raw !== "string" || raw.length > LIMITES.payload) return null;
 
@@ -63,10 +73,11 @@ function parsearMensajeAgente(raw) {
   if (!esObjetoPlano(msg)) return null;
 
   if (msg.type === "auth") {
-    if (!soloClaves(msg, ["type", "token", "model"])) return null;
+    if (!soloClaves(msg, ["type", "token", "model", "v"])) return null;
     if (typeof msg.token !== "string" || msg.token.length > LIMITES.token || !RE_TOKEN.test(msg.token)) return null;
     if (typeof msg.model !== "string" || !RE_MODELO.test(msg.model)) return null;
-    return { type: "auth", token: msg.token, model: msg.model };
+    if (msg.v !== undefined && !esVersion(msg.v)) return null;
+    return { type: "auth", token: msg.token, model: msg.model, v: msg.v ?? 1 };
   }
 
   if (msg.type === "reply") {
@@ -84,11 +95,12 @@ function parsearMensajeAgente(raw) {
 // chat y texto plano.
 function validarMensajesJob(mensajes) {
   if (!Array.isArray(mensajes) || mensajes.length === 0 || mensajes.length > LIMITES.mensajesPorJob) return false;
-  return mensajes.every((m) =>
+  const ok = mensajes.every((m) =>
     esObjetoPlano(m) && soloClaves(m, ["role", "content"]) &&
     ROLES.includes(m.role) &&
     typeof m.content === "string" && m.content.length <= LIMITES.contenidoPorMensaje
   );
+  return ok && mensajes.reduce((total, m) => total + m.content.length, 0) <= LIMITES.contenidoPorJob;
 }
 
 // ─── GATEWAY ↔ BOT (IPC) ─────────────────────────────────────────────────────
@@ -102,10 +114,11 @@ function parsearIpcDelGateway(msg) {
       if (!soloClaves(msg, ["kind", "port"]) || !Number.isInteger(msg.port)) return null;
       return { kind: "listening", port: msg.port };
     case "auth":
-      if (!soloClaves(msg, ["kind", "conn", "hash", "model"])) return null;
+      if (!soloClaves(msg, ["kind", "conn", "hash", "model", "v"])) return null;
       if (!esConn(msg.conn) || typeof msg.hash !== "string" || !RE_HASH.test(msg.hash)) return null;
       if (typeof msg.model !== "string" || !RE_MODELO.test(msg.model)) return null;
-      return { kind: "auth", conn: msg.conn, hash: msg.hash, model: msg.model };
+      if (!esVersion(msg.v)) return null;
+      return { kind: "auth", conn: msg.conn, hash: msg.hash, model: msg.model, v: msg.v };
     case "closed":
       if (!soloClaves(msg, ["kind", "conn"]) || !esConn(msg.conn)) return null;
       return { kind: "closed", conn: msg.conn };
@@ -174,6 +187,7 @@ function formatearRespuesta(texto, modelo, dueno) {
 
 module.exports = {
   LIMITES,
+  VERSION_MEMORIA,
   generarToken,
   hashToken,
   nuevoIdJob,
