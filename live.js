@@ -308,18 +308,18 @@ async function comandoLlm(message, client, arg) {
   // Si ya tenía uno, la sesión con el token viejo se corta ahora.
   if (anterior) llm.expulsar(anterior.id);
 
-  // De GitHub, fijado al commit que corre el bot (código a la vista y huella
-  // verificable). Si no se puede fijar, del propio gateway.
+  // Links a GitHub (código a la vista) y huella del agente que corre el bot.
   const gh = llm.descargaAgente();
   const chat = chatDe(message);
 
   await message.reply(
     `🧠 *Sumá tu LLM a MotiBot*\n\n` +
-    `*1.* Instalá Ollama (ollama.com) y bajá un modelo: \`ollama pull qwen3:8b\`\n\n` +
-    `*2.* Bajá el agente (botón ⬇️ de GitHub):\n${gh.codigo}\n` +
-    `Qué hace: ${gh.explicacion}\n\n` +
-    `*3.* Correlo con el token de abajo (necesita Node 22+):\n` +
-    `\`node --permission motibot-agent.js --server ${llm.urlWebSocket()} --model qwen3:8b --token <token>\`\n\n` +
+    `Necesitás *Ollama* (ollama.com) y *Node 22+* (nodejs.org).\n\n` +
+    `*Windows:* bajá el instalador (botón ⬇️ de GitHub), clic derecho → *Ejecutar con PowerShell*. ` +
+    `Te pide el token de abajo y te deja el acceso directo *MotiBot LLM* en el escritorio:\n${gh.instalador}\n\n` +
+    `*Mac/Linux:* bajá el agente (${gh.codigo}) y correlo:\n` +
+    `\`node --permission motibot-agent.js --server ${llm.urlWebSocket()} --model qwen3.5:9b --token <token>\`\n\n` +
+    `Qué hace, explicado: ${gh.explicacion}\n\n` +
     `⚠️ El token es una contraseña: no lo compartas.` +
     (anterior ? `\n_Generé uno nuevo: el anterior dejó de servir._` : "")
   );

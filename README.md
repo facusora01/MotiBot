@@ -23,6 +23,8 @@ MotivationBot/
 ├── llm-gateway.js       ← Proceso aislado que recibe a los agentes por WebSocket
 ├── llm-protocol.js      ← Protocolo (solo texto) y limpieza de respuestas
 ├── motibot-agent.js     ← Agente que corre cada usuario al lado de su Ollama
+├── instalador/          ← Instalador para Windows (acceso directo "MotiBot LLM")
+├── docs/AGENTE.md       ← Qué hace el agente, explicado para quien lo instala
 ├── encontrar-grupo.js  ← Script opcional para listar IDs de grupo (no hace
 │                          falta para el uso normal: el bot se suma a un grupo
 │                          con /mbot add, sin necesidad del ID a mano)

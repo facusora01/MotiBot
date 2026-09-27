@@ -10,6 +10,30 @@ mismo, sin tener que confiar en nadie.
 
 ---
 
+## Instalarlo en Windows
+
+Hace falta tener [Ollama](https://ollama.com/download) y
+[Node.js 22 o más nuevo](https://nodejs.org).
+
+1. Bajá [`instalador/instalar-motibot.ps1`](../instalador/instalar-motibot.ps1)
+   (botón de descarga de GitHub).
+2. Clic derecho sobre el archivo → **Ejecutar con PowerShell**.
+3. Pegá el token que te mandó MotiBot con `/mbot llm add`.
+
+El instalador es texto, igual que el agente: se puede leer antes de
+correrlo. Revisa Node y Ollama, baja el agente a
+`%LOCALAPPDATA%\MotiBotLLM`, te muestra su huella, guarda el token en tu
+usuario de Windows, te ofrece bajar un modelo si no tenés ninguno y crea el
+acceso directo **MotiBot LLM** en el escritorio. No pide permisos de
+administrador.
+
+Con el acceso directo elegís el modelo, y al cerrar la ventana se libera la
+memoria. Si MotiBot te da un token nuevo, el mismo acceso directo te lo
+pide. Para actualizar, volvé a correr el instalador.
+
+En Mac o Linux, bajá `motibot-agent.js` y corré el comando que te manda
+MotiBot.
+
 ## Qué hace
 
 1. Se conecta a MotiBot por internet, con una conexión cifrada (`wss://`).

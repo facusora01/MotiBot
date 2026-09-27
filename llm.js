@@ -218,6 +218,7 @@ function huellaAgente() {
 function descargaAgente() {
   const base = `https://github.com/${REPO_AGENTE}/blob/main`;
   return {
+    instalador: `${base}/instalador/instalar-motibot.ps1`,
     codigo: `${base}/motibot-agent.js`,
     explicacion: `${base}/docs/AGENTE.md`,
     huella: huellaAgente(),
