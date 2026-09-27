@@ -184,8 +184,10 @@ async function testsLlm() {
   chequear(/if \(!process\.permission \|\|/.test(agente) && /"fs\.read", "fs\.write"/.test(agente),
     "el agente se niega a correr sin sandbox");
   chequear(!/\btools\s*:/.test(agente) && !/tool_calls/.test(agente), "el agente no le ofrece tools al modelo");
-  chequear((agente.match(/fetch\(/g) || []).length === 2 && /\/api\/chat`/.test(agente) && /\/api\/tags`/.test(agente),
-    "el agente solo llama a /api/chat y /api/tags de Ollama");
+  const endpoints = [...agente.matchAll(/\$\{ollama\}(\/[^`]*)`/g)].map((m) => m[1]);
+  chequear(endpoints.length > 0 && endpoints.every((e) => e === "/api/chat" || e === "/api/tags") &&
+    (agente.match(/fetch\(/g) || []).length === endpoints.length,
+    `el agente solo llama a /api/chat y /api/tags de Ollama (${[...new Set(endpoints)].join(", ")})`);
 
   console.log("\n--- Test 14: Comandos /mbot live y /mbot llm ---");
   await simulate("/mbot live", false, false, "Solo los admins");

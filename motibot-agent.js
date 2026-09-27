@@ -150,6 +150,34 @@ async function chequearOllama() {
   }
 }
 
+// ─── AL CERRAR: LIBERAR LA MEMORIA ───────────────────────────────────────────
+// Ollama deja el modelo cargado en la placa un rato después de usarlo. Al
+// cerrar el agente (Ctrl+C o cerrando la ventana) le pedimos que lo saque ya:
+// un chat vacío con keep_alive 0 descarga el modelo. En Windows, cerrar la
+// ventana llega como SIGHUP y da unos segundos antes de cortar el proceso.
+let cerrandoAgente = false;
+
+async function descargarModelo() {
+  try {
+    await fetch(`${ollama}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: modelo, messages: [], keep_alive: 0 }),
+      signal: AbortSignal.timeout(4000),
+    });
+    console.log(`🧹 Saqué ${modelo} de la memoria.`);
+  } catch (e) { /* Ollama ya no está: la memoria se liberó igual */ }
+}
+
+for (const senal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"]) {
+  process.on(senal, async () => {
+    if (cerrandoAgente) return;
+    cerrandoAgente = true;
+    await descargarModelo();
+    process.exit(0);
+  });
+}
+
 // ─── VALIDACIÓN DE LO QUE LLEGA ──────────────────────────────────────────────
 // Tampoco le creemos al servidor: solo aceptamos "ready" y "job" con chat.
 function esObjetoPlano(x) {
