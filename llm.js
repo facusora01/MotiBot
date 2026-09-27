@@ -6,6 +6,7 @@
 // un agente se usa para armar un comando) y habla con él por IPC.
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { fork } = require("child_process");
 const db = require("./database");
 const P = require("./llm-protocol");
@@ -196,6 +197,58 @@ function iniciarGateway() {
   });
 }
 
+// ─── DESCARGA VERIFICABLE DEL AGENTE ─────────────────────────────────────────
+// El agente se baja de GitHub, fijado al commit que está corriendo el bot: el
+// código queda a la vista y la huella SHA-256 que mostramos coincide byte a
+// byte con ese archivo. El repo sale de LLM_REPO y no de .git/config, que en
+// el servidor puede tener credenciales en la URL del remote.
+const REPO_AGENTE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(process.env.LLM_REPO || "")
+  ? process.env.LLM_REPO
+  : "facusora01/MotiBot";
+
+function commitActual() {
+  const git = path.join(__dirname, ".git");
+  const esSha = (s) => /^[0-9a-f]{40}$/.test(s || "");
+  try {
+    const head = fs.readFileSync(path.join(git, "HEAD"), "utf8").trim();
+    if (esSha(head)) return head;
+    const ref = (head.match(/^ref: (refs\/heads\/[A-Za-z0-9._/-]+)$/) || [])[1];
+    if (!ref || ref.includes("..")) return null;
+    try {
+      const sha = fs.readFileSync(path.join(git, ref), "utf8").trim();
+      if (esSha(sha)) return sha;
+    } catch (e) { /* puede estar en packed-refs */ }
+    const linea = fs.readFileSync(path.join(git, "packed-refs"), "utf8").split("\n").find((l) => l.endsWith(` ${ref}`));
+    const sha = linea && linea.split(" ")[0];
+    return esSha(sha) ? sha : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function huellaAgente() {
+  try {
+    return crypto.createHash("sha256").update(fs.readFileSync(AGENTE_PATH)).digest("hex");
+  } catch (e) {
+    return null;
+  }
+}
+
+// Links y huella para las instrucciones de /mbot llm add. null si no se puede
+// fijar el commit (por ejemplo, fuera de un checkout de git).
+function descargaAgente() {
+  const sha = commitActual();
+  const huella = huellaAgente();
+  if (!sha || !huella) return null;
+  const base = `https://github.com/${REPO_AGENTE}/blob/${sha}`;
+  return {
+    descarga: `https://raw.githubusercontent.com/${REPO_AGENTE}/${sha}/motibot-agent.js`,
+    codigo: `${base}/motibot-agent.js`,
+    explicacion: `${base}/docs/AGENTE.md`,
+    huella,
+  };
+}
+
 function detenerGateway() {
   apagado = true;
   if (gateway) try { gateway.kill(); } catch (e) { /* nada */ }
@@ -273,6 +326,7 @@ module.exports = {
   habilitado,
   urlPublica,
   urlWebSocket,
+  descargaAgente,
   conectados,
   infoConectado,
   ocupado,

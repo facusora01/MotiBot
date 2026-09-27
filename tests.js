@@ -153,8 +153,11 @@ async function testsLlm() {
 
   console.log("\n--- Test 13: El código del LLM no puede ejecutar nada ---");
   const PROHIBIDO = [
-    [/require\(\s*["'](node:)?(child_process|fs|fs\/promises|vm|worker_threads|cluster|module|v8|inspector)["']\s*\)/, "módulos de ejecución/archivos"],
-    [/require\(\s*["']better-sqlite3["']\s*\)/, "acceso a la base"],
+    // (?<!["'`]): un require real nunca va pegado a una comilla. Así el texto
+    // de ayuda que se le muestra al usuario (node -e "require('fs')...") no
+    // cuenta, pero cualquier require de código sí, esté donde esté.
+    [/(?<!["'`])require\(\s*["'](node:)?(child_process|fs|fs\/promises|vm|worker_threads|cluster|module|v8|inspector)["']\s*\)/, "módulos de ejecución/archivos"],
+    [/(?<!["'`])require\(\s*["']better-sqlite3["']\s*\)/, "acceso a la base"],
     [/\beval\s*\(/, "eval"],
     [/new\s+Function\s*\(/, "new Function"],
     [/process\.(binding|dlopen|_linkedBinding)\b/, "bindings nativos"],
@@ -188,6 +191,18 @@ async function testsLlm() {
   chequear(endpoints.length > 0 && endpoints.every((e) => e === "/api/chat" || e === "/api/tags") &&
     (agente.match(/fetch\(/g) || []).length === endpoints.length,
     `el agente solo llama a /api/chat y /api/tags de Ollama (${[...new Set(endpoints)].join(", ")})`);
+
+  console.log("\n--- Test 13b: Descarga verificable del agente ---");
+  const d = require("./llm").descargaAgente();
+  if (!d) {
+    console.log("⚠️ Sin checkout de git: se salta (el bot cae a la descarga del gateway).");
+  } else {
+    const huella = require("crypto").createHash("sha256").update(fs.readFileSync(path.join(__dirname, "motibot-agent.js"))).digest("hex");
+    chequear(d.huella === huella, "la huella que se muestra es la del archivo");
+    chequear(/^https:\/\/raw\.githubusercontent\.com\/[^/]+\/[^/]+\/[0-9a-f]{40}\/motibot-agent\.js$/.test(d.descarga),
+      "la descarga es de GitHub, fijada a un commit");
+    chequear(!/ghp_|@github\.com|:\/\/[^/]*@/.test(JSON.stringify(d)), "los links no llevan credenciales");
+  }
 
   console.log("\n--- Test 14: Comandos /mbot live y /mbot llm ---");
   await simulate("/mbot live", false, false, "Solo los admins");

@@ -221,7 +221,10 @@ Funnel la ruta o no.
 - `npm test` falla si el código del LLM importa `child_process`, `fs`, `vm` y
   similares, o si el gateway se lanza con más permisos.
 
-**Del lado del usuario: su PC tampoco se toca.**
+**Del lado del usuario: su PC tampoco se toca.** Explicado para quien lo
+instala en [docs/AGENTE.md](docs/AGENTE.md). `/mbot llm add` manda el agente
+desde GitHub, fijado al commit que corre el bot, con su huella SHA-256 para
+verificarlo (el repo sale de `LLM_REPO`, por defecto `facusora01/MotiBot`).
 - El agente se corre con `node --permission motibot-agent.js ...` y se niega a
   arrancar sin ese encierro: no puede leer ni escribir archivos, lanzar
   programas, crear workers ni cargar addons. Así, ni un servidor comprometido
