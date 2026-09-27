@@ -109,6 +109,10 @@ function llamarChat(mensajes, apagarThink) {
     model: modelo,
     messages: mensajes,
     stream: false,
+    // -1: el modelo queda cargado mientras el agente esté abierto (Ollama lo
+    // descarga solo a los 5 minutos, y recargarlo desde un disco lento puede
+    // tardar más que la espera de MotiBot). Al cerrar, descargarModelo() lo saca.
+    keep_alive: -1,
     options: { num_predict: 512, num_ctx: CONTEXTO },
   };
   if (apagarThink) cuerpo.think = false;
@@ -147,6 +151,31 @@ async function chequearOllama() {
     else console.log(`✅ Ollama listo con ${modelo}.`);
   } catch (e) {
     console.warn(`⚠️ No pude hablar con Ollama en ${ollama}. ¿Está corriendo? (${e.message})`);
+  }
+}
+
+// ─── AL ARRANCAR: CARGAR EL MODELO ───────────────────────────────────────────
+// Un modelo grande en un disco lento puede tardar minutos en cargarse, más que
+// lo que MotiBot espera una respuesta. Por eso se carga ANTES de conectarse:
+// cuando MotiBot ve el LLM disponible, ya responde rápido. Un chat vacío carga
+// el modelo sin generar nada.
+const TIMEOUT_CARGA = 15 * 60 * 1000;
+
+async function cargarModelo() {
+  console.log(`⏳ Cargando ${modelo} en memoria (la primera vez puede tardar unos minutos)...`);
+  const inicio = Date.now();
+  try {
+    const res = await fetch(`${ollama}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: modelo, messages: [], keep_alive: -1, options: { num_ctx: CONTEXTO } }),
+      signal: AbortSignal.timeout(TIMEOUT_CARGA),
+    });
+    if (!res.ok) throw new Error(`Ollama respondió ${res.status}`);
+    await res.json();
+    console.log(`✅ Modelo cargado en ${Math.round((Date.now() - inicio) / 1000)}s.`);
+  } catch (e) {
+    console.warn(`⚠️ No pude cargar el modelo de antemano (${e.message}). Se cargará con la primera pregunta.`);
   }
 }
 
@@ -280,4 +309,4 @@ function conectar() {
 }
 
 console.log(`🧠 MotiBot agent → ${servidor}`);
-chequearOllama().then(conectar);
+chequearOllama().then(cargarModelo).then(conectar);

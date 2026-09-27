@@ -174,11 +174,24 @@ function limpiarRespuesta(texto) {
 // principio de todo se saca.
 const RE_NOMBRE_INICIAL = /^[*_]*[A-Za-zÁÉÍÓÚÑáéíóúñ][A-Za-z0-9ÁÉÍÓÚÑáéíóúñ]{0,19}[*_]*\s*:[*_]*\s+/;
 
+// Los modelos escriben en Markdown; WhatsApp tiene su propio formato. Se
+// traduce lo más común para que no queden asteriscos ni numerales sueltos:
+//   **negrita** / __negrita__ -> *negrita*
+//   ~~tachado~~               -> ~tachado~
+//   # Título                  -> *Título*
+function aWhatsApp(texto) {
+  return texto
+    .replace(/\*\*([^*\n]+?)\*\*/g, "*$1*")
+    .replace(/__([^_\n]+?)__/g, "*$1*")
+    .replace(/~~([^~\n]+?)~~/g, "~$1~")
+    .replace(/^#{1,6}\s+(.+?)\s*#*$/gm, "*$1*");
+}
+
 // El mensaje final para el grupo. Nunca empieza con "/" ni con "@", diga lo
 // que diga el LLM: el bot no lo puede leer como un comando. Siempre termina
 // con la firma, que es lo que lo identifica como respuesta del LLM.
 function formatearRespuesta(texto, modelo, dueno) {
-  const cuerpo = limpiarRespuesta(texto)
+  const cuerpo = aWhatsApp(limpiarRespuesta(texto))
     .replace(RE_NOMBRE_INICIAL, "")
     .replace(/^[\s/@]+/, "") || "…";
   const firma = limpiarRespuesta(`${modelo} · LLM de ${dueno || "alguien del grupo"}`).replace(/\n/g, " ");

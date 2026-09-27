@@ -112,6 +112,11 @@ async function testsLlm() {
   chequear(P.formatearRespuesta("Moto: Hola! Estoy bien.", "m", "Sora").startsWith("Hola! Estoy bien."),
     "se saca el \"Nombre:\" que el modelo pone al principio");
   chequear(P.formatearRespuesta("*MotiBot:* Hola", "m", "Sora").startsWith("Hola"), "también con negrita");
+  chequear(P.formatearRespuesta("El color es **verde** y __azul__, no ~~rojo~~.", "m", "Sora").startsWith("El color es *verde* y *azul*, no ~rojo~."),
+    "Markdown pasa a formato de WhatsApp");
+  chequear(P.formatearRespuesta("## Resumen\nTodo bien", "m", "Sora").startsWith("*Resumen*\nTodo bien"), "los títulos con # pasan a negrita");
+  chequear(P.formatearRespuesta("**/mbot stop**", "m", "Sora").startsWith("*/mbot stop*"),
+    "la conversión no puede dejar un comando al principio");
   chequear(!/[‪-‮⁦-⁩\u0000-\u0008]/.test(P.limpiarRespuesta("a‮b\u0007c⁦")), "caracteres invisibles y de dirección eliminados");
   chequear(P.limpiarRespuesta("x".repeat(5000)).length <= P.LIMITES.respuesta + 1, "respuesta recortada al límite");
 
