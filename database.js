@@ -271,20 +271,35 @@ try {
 
 // ─── GRUPOS ───────────────────────────────────────────────────────────────────
 
+// Nombre de relleno para cuando WhatsApp no deja leer el del grupo.
+function nombreDeRelleno(groupId) {
+  return `Equipo ${String(groupId).split("@")[0].slice(-4)}`;
+}
+
+function esNombreDeRelleno(groupId, nombre) {
+  return !nombre || nombre === nombreDeRelleno(groupId);
+}
+
+// groupName null = no se pudo leer: un grupo ya registrado conserva el nombre
+// que tenía (antes se pisaba con el de relleno) y uno nuevo recibe el relleno.
 function addGroup(groupId, groupName) {
   const token = crypto.randomBytes(8).toString('hex');
 
   const stmt = db.prepare(`
     INSERT INTO groups (group_id, group_name, active, web_token)
-    VALUES (?, ?, 1, ?)
-    ON CONFLICT(group_id) DO UPDATE SET 
-      active = 1, 
-      group_name = excluded.group_name,
+    VALUES (?, COALESCE(?, ?), 1, ?)
+    ON CONFLICT(group_id) DO UPDATE SET
+      active = 1,
+      group_name = COALESCE(?, groups.group_name, excluded.group_name),
       web_token = COALESCE(groups.web_token, excluded.web_token) -- 🛡️ No pisa el token si ya existe
   `);
-  stmt.run(groupId, groupName, token);
+  stmt.run(groupId, groupName || null, nombreDeRelleno(groupId), token, groupName || null);
 
   db.prepare(`INSERT OR IGNORE INTO group_settings (group_id) VALUES (?)`).run(groupId);
+}
+
+function renombrarGrupo(groupId, nombre) {
+  return db.prepare(`UPDATE groups SET group_name = ? WHERE group_id = ?`).run(nombre, groupId).changes > 0;
 }
 
 function removeGroup(groupId) {
@@ -919,6 +934,8 @@ function borrarGroupLive(groupId) {
 }
 
 module.exports = {
+  esNombreDeRelleno,
+  renombrarGrupo,
   guardarLlmAgent,
   getLlmAgent,
   getLlmAgentPorHash,

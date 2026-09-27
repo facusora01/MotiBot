@@ -122,7 +122,7 @@ function mensajeDisparo(cumplidas, fechaPizarra) {
     `📅 Pizarra del ${fechaPizarra}\n\n` +
     `${lineas.join("\n\n")}\n\n` +
     `_${cumplidas.length === 1 ? "La borro" : "Las borro"} para no repetir el aviso todos los días. ` +
-    `Podés crear otra con_ \`/mbot alerta <grano> <precio>\`\n\n` +
+    `Podés crear otra con_ \`/mbot alert <grano> <precio>\`\n\n` +
     `_Información de referencia (pizarra Barrilli), no es una recomendación de venta._`
   );
 }

@@ -1,5 +1,5 @@
 // Panel del super admin: gestión de MotiBot desde su chat privado, sin SSH.
-// Todo se referencia por el NÚMERO de la lista de `/admin grupos` (los ids de
+// Todo se referencia por el NÚMERO de la lista de `/admin groups` (los ids de
 // WhatsApp son impronunciables); ese orden es estable porque getAllGroups()
 // ordena solo por id de alta, así dar de baja un grupo no renumera al resto.
 const db = require("./database");
@@ -11,14 +11,15 @@ const AYUDA = `
 🛠️ *Panel de MotiBot* — solo super admins
 
 *📋 Grupos*
-▸ \`/admin grupos\` — listar todos (con su número)
+▸ \`/admin groups\` — listar todos (con su número)
 ▸ \`/admin info <n>\` — ficha completa de un grupo
-▸ \`/admin baja <n>\` — dejar de mandar ahí (sigo adentro del grupo)
-▸ \`/admin alta <n>\` — volver a activarlo
-▸ \`/admin salir <n>\` — irme del grupo de WhatsApp (pide confirmación)
-▸ \`/admin borrar <n>\` — borrar de la base un grupo dado de baja
-▸ \`/admin borrar bajas\` — borrar todos los que estén dados de baja
-▸ \`/admin decir <n> <texto>\` — mandar un mensaje al grupo
+▸ \`/admin rename <n> <nombre>\` — ponerle el nombre a mano (si WhatsApp no deja leerlo)
+▸ \`/admin disable <n>\` — dejar de mandar ahí (sigo adentro del grupo)
+▸ \`/admin enable <n>\` — volver a activarlo
+▸ \`/admin leave <n>\` — irme del grupo de WhatsApp (pide confirmación)
+▸ \`/admin delete <n>\` — borrar de la base un grupo dado de baja
+▸ \`/admin delete disabled\` — borrar todos los que estén dados de baja
+▸ \`/admin say <n> <texto>\` — mandar un mensaje al grupo
 
 *🚜 Modo del grupo*
 ▸ \`/admin phrase off <n>\` — solo mercado: apaga frases, cumples e ideas
@@ -28,19 +29,19 @@ const AYUDA = `
 _Los admins de cada grupo también lo manejan con_ \`/mbot phrase on|off\`_._
 
 *🌾 Mercado de granos* _(la pizarra diaria)_
-▸ \`/admin mercado on <n>\` — *prenderlo en el grupo n*
-▸ \`/admin mercado off <n>\` — apagarlo ahí
-▸ \`/admin mercado on todos\` — prenderlo en todos los grupos activos
-▸ \`/admin mercado\` — ver en qué grupos está prendido
-▸ \`/admin mercado ver\` — previsualizar la cotización acá, sin mandarla
-▸ \`/admin mercado ya <n>\` — mandarla al grupo n ahora mismo
-▸ \`/admin mercado hora <n> <HH:MM>\` — a partir de qué hora esperar la pizarra
-▸ \`/admin historia\` — ver la serie de precios guardada (y recargarla)
+▸ \`/admin market on <n>\` — *prenderlo en el grupo n*
+▸ \`/admin market off <n>\` — apagarlo ahí
+▸ \`/admin market on all\` — prenderlo en todos los grupos activos
+▸ \`/admin market\` — ver en qué grupos está prendido
+▸ \`/admin market preview\` — previsualizar la cotización acá, sin mandarla
+▸ \`/admin market now <n>\` — mandarla al grupo n ahora mismo
+▸ \`/admin market time <n> <HH:MM>\` — a partir de qué hora esperar la pizarra
+▸ \`/admin history\` — ver la serie de precios guardada (y recargarla)
 
-_Los admins de cada grupo también la prenden con_ \`/mbot mercado on|off\`_._
+_Los admins de cada grupo también la prenden con_ \`/mbot market on|off\`_._
 
-_El \`<n>\` es el número que le toca al grupo en \`/admin grupos\`._
-_Ejemplo: \`/admin grupos\` y después \`/admin mercado on 2\`._
+_El \`<n>\` es el número que le toca al grupo en \`/admin groups\`._
+_Ejemplo: \`/admin groups\` y después \`/admin market on 2\`._
 `.trim();
 
 const HORA_REGEX = /^([01]?[0-9]|2[0-3]):([0-5][0-9])$/;
@@ -64,7 +65,7 @@ function resolverGrupo(arg) {
 
   const n = parseInt(String(arg || "").trim(), 10);
   if (!Number.isInteger(n) || n < 1 || n > grupos.length) {
-    return { error: `❌ Número de grupo inválido. Elegí uno del 1 al ${grupos.length} (mirá \`/admin grupos\`).` };
+    return { error: `❌ Número de grupo inválido. Elegí uno del 1 al ${grupos.length} (mirá \`/admin groups\`).` };
   }
   return { grupo: grupos[n - 1], n };
 }
@@ -83,12 +84,32 @@ function lineaGrupo(g, i) {
   return `*${i + 1}.* ${estado} ${g.group_name || "(sin nombre)"}\n     _${detalle}_`;
 }
 
-async function comandoGrupos(message) {
-  const grupos = listarGrupos();
-  if (!grupos.length) {
+// Los grupos que quedaron con el nombre de relleno ("Equipo 1915") porque
+// WhatsApp no dejó leer el suyo: se intenta de nuevo al listar. commands.js
+// requiere este módulo, así que su helper se pide al usarlo.
+async function recuperarNombres(client, grupos) {
+  if (!client) return 0;
+  const { nombreDelGrupo } = require("./commands");
+  let recuperados = 0;
+  for (const g of grupos) {
+    if (!String(g.group_id).endsWith("@g.us") || !db.esNombreDeRelleno(g.group_id, g.group_name)) continue;
+    const nombre = await nombreDelGrupo(client, g.group_id);
+    if (nombre && !db.esNombreDeRelleno(g.group_id, nombre)) {
+      db.renombrarGrupo(g.group_id, nombre);
+      console.log(`🏷️ Recuperé el nombre de ${g.group_id}: "${g.group_name}" → "${nombre}"`);
+      recuperados++;
+    }
+  }
+  return recuperados;
+}
+
+async function comandoGrupos(message, client) {
+  if (!listarGrupos().length) {
     return message.reply("📭 Todavía no hay ningún grupo registrado. Usá `/mbot add` dentro de un grupo para sumarlo.");
   }
 
+  const recuperados = await recuperarNombres(client, listarGrupos());
+  const grupos = listarGrupos();
   const activos = grupos.filter((g) => g.active).length;
   const lineas = grupos.map(lineaGrupo);
 
@@ -96,7 +117,9 @@ async function comandoGrupos(message) {
     `📋 *Grupos de MotiBot* (${activos} activo${activos === 1 ? "" : "s"} de ${grupos.length})\n\n` +
     `${lineas.join("\n\n")}\n\n` +
     `_🟢 activo · ⚪ dado de baja · 🌾 mercado · 🚜 solo mercado_\n` +
-    `Detalle: \`/admin info <n>\``
+    (recuperados ? `_🏷️ Recuperé el nombre de ${recuperados} grupo${recuperados === 1 ? "" : "s"}._\n` : "") +
+    `Detalle: \`/admin info <n>\`\n` +
+    `Borrar: \`/admin delete <n>\` · \`/admin delete disabled\``
   );
 }
 
@@ -134,7 +157,7 @@ async function comandoBaja(message, arg) {
   db.removeGroup(grupo.group_id);
   return message.reply(
     `✅ *${grupo.group_name}* dado de baja. No le mando más nada.\n\n` +
-    `_Sigo dentro del grupo de WhatsApp: para irme del todo usá \`/admin salir\`. Para reactivarlo, \`/admin alta\`. Para borrarlo de la base, \`/admin borrar\`._`
+    `_Sigo dentro del grupo de WhatsApp: para irme del todo usá \`/admin leave\`. Para reactivarlo, \`/admin enable\`. Para borrarlo de la base, \`/admin delete\`._`
   );
 }
 
@@ -158,7 +181,7 @@ async function comandoSalir(message, client, arg, confirmacion) {
   if (String(confirmacion || "").toLowerCase() !== "confirmar") {
     return message.reply(
       `⚠️ Esto me saca del grupo *${grupo.group_name}* en WhatsApp. Para volver a entrar tenés que invitarme de nuevo.\n\n` +
-      `Si estás seguro:\n\`/admin salir ${n} confirmar\``
+      `Si estás seguro:\n\`/admin leave ${n} confirm\``
     );
   }
 
@@ -179,7 +202,7 @@ async function comandoSalir(message, client, arg, confirmacion) {
 // lleva puestas las frases, los cumples y las ideas del grupo, así que además
 // pide confirmación con el conteo de lo que se pierde a la vista.
 async function comandoBorrar(message, arg, confirmacion) {
-  // `/admin borrar bajas` limpia de una todos los inactivos.
+  // `/admin delete disabled` limpia de una todos los inactivos.
   if (String(arg || "").toLowerCase() === "bajas") {
     const bajas = listarGrupos().filter((g) => !g.active);
     if (!bajas.length) return message.reply("✅ No hay ningún grupo dado de baja para borrar.");
@@ -188,14 +211,14 @@ async function comandoBorrar(message, arg, confirmacion) {
       const lista = bajas.map((g) => `▸ ${g.group_name || "(sin nombre)"} — ${resumenDatos(g.group_id)}`).join("\n");
       return message.reply(
         `⚠️ Voy a borrar *${bajas.length}* grupo${bajas.length === 1 ? "" : "s"} dado${bajas.length === 1 ? "" : "s"} de baja, con todos sus datos:\n\n${lista}\n\n` +
-        `Esto no se puede deshacer. Si estás seguro:\n\`/admin borrar bajas confirmar\``
+        `Esto no se puede deshacer. Si estás seguro:\n\`/admin delete disabled confirm\``
       );
     }
 
     for (const g of bajas) db.deleteGroupCompleto(g.group_id);
     console.warn(`🗑️ Borrados ${bajas.length} grupos dados de baja desde el panel.`);
     return message.reply(
-      `🗑️ Borré ${bajas.length} grupo${bajas.length === 1 ? "" : "s"} y sus datos.\n\n_Los números de \`/admin grupos\` se recorrieron._`
+      `🗑️ Borré ${bajas.length} grupo${bajas.length === 1 ? "" : "s"} y sus datos.\n\n_Los números de \`/admin groups\` se recorrieron._`
     );
   }
 
@@ -205,7 +228,7 @@ async function comandoBorrar(message, arg, confirmacion) {
   if (grupo.active) {
     return message.reply(
       `❌ *${grupo.group_name}* está activo. Solo borro grupos dados de baja.\n\n` +
-      `Si querés eliminarlo, primero:\n\`/admin baja ${n}\``
+      `Si querés eliminarlo, primero:\n\`/admin disable ${n}\``
     );
   }
 
@@ -213,7 +236,7 @@ async function comandoBorrar(message, arg, confirmacion) {
     return message.reply(
       `⚠️ Esto borra *${grupo.group_name}* de la base junto con ${resumenDatos(grupo.group_id)}. No se puede deshacer.\n\n` +
       `Si algún día vuelvo a ese grupo, arranca de cero con \`/mbot add\`.\n\n` +
-      `Si estás seguro:\n\`/admin borrar ${n} confirmar\``
+      `Si estás seguro:\n\`/admin delete ${n} confirm\``
     );
   }
 
@@ -221,7 +244,7 @@ async function comandoBorrar(message, arg, confirmacion) {
   console.warn(`🗑️ Grupo borrado desde el panel: ${grupo.group_name} (${grupo.group_id})`);
 
   return message.reply(
-    `🗑️ Borré *${grupo.group_name}* y todos sus datos.\n\n_Ojo: los números de \`/admin grupos\` se corrieron._`
+    `🗑️ Borré *${grupo.group_name}* y todos sus datos.\n\n_Ojo: los números de \`/admin groups\` se corrieron._`
   );
 }
 
@@ -246,7 +269,7 @@ async function comandoDecir(message, client, arg, texto) {
   if (error) return message.reply(error);
 
   if (!texto || !texto.trim()) {
-    return message.reply("❌ Falta el mensaje.\n\n`/admin decir <n> <texto>`");
+    return message.reply("❌ Falta el mensaje.\n\n`/admin say <n> <texto>`");
   }
 
   try {
@@ -298,7 +321,7 @@ async function comandoFrases(message, partes) {
   // que dejarlo descubrir que MotiBot dejó de existir ahí.
   const aviso = db.isMarketEnabled(grupo.group_id)
     ? `Sigue mandando la pizarra de granos a las ${fmtHora(db.getGroupSettings(grupo.group_id)?.market_time)} hs.`
-    : `⚠️ *Ojo:* ese grupo tampoco tiene el mercado activado, así que ahí no voy a hacer nada.\nPrendelo con \`/admin mercado on ${n}\`.`;
+    : `⚠️ *Ojo:* ese grupo tampoco tiene el mercado activado, así que ahí no voy a hacer nada.\nPrendelo con \`/admin market on ${n}\`.`;
 
   return message.reply(
     `🚜 *${grupo.group_name}* pasa a *modo solo mercado*.\n\n` +
@@ -329,7 +352,7 @@ async function comandoHistoria(message, partes) {
   const resumen = db.resumenMatba();
   if (!resumen.length) {
     return message.reply(
-      "\u{1F4DA} Todavía no hay historia de precios guardada.\n\n_Traerla ahora:_ `/admin historia cargar`"
+      "\u{1F4DA} Todavía no hay historia de precios guardada.\n\n_Traerla ahora:_ `/admin history load`"
     );
   }
 
@@ -340,7 +363,7 @@ async function comandoHistoria(message, partes) {
   return message.reply(
     `\u{1F4DA} *Historia de precios guardada*\n\n${lineas.join("\n\n")}\n\n` +
     `_Fuente: Matba Rofex. Se pone al día sola cuando cierra la rueda._\n` +
-    `_Recargar todo:_ \`/admin historia cargar\``
+    `_Recargar todo:_ \`/admin history load\``
   );
 }
 
@@ -360,8 +383,8 @@ async function comandoMercado(message, client, partes) {
 
     return message.reply(
       `🌾 *Mercado de granos*\n\n${detalle}\n\n` +
-      `Activar: \`/admin mercado on <n>\`\n` +
-      `Previsualizar: \`/admin mercado ver\``
+      `Activar: \`/admin market on <n>\`\n` +
+      `Previsualizar: \`/admin market preview\``
     );
   }
 
@@ -394,7 +417,7 @@ async function comandoMercado(message, client, partes) {
 
     return message.reply(
       encender
-        ? `🌾 Mercado de granos *activado* en *${grupo.group_name}*.\n\nLo mando *apenas se publica la pizarra del día*, sin buscarla antes de las *${fmtHora(s?.market_time)} hs*. Una vez por día, y solo los días con rueda.\n\n_Cambiar horario:_ \`/admin mercado hora ${n} HH:MM\`\n_Probarlo ahora:_ \`/admin mercado ya ${n}\``
+        ? `🌾 Mercado de granos *activado* en *${grupo.group_name}*.\n\nLo mando *apenas se publica la pizarra del día*, sin buscarla antes de las *${fmtHora(s?.market_time)} hs*. Una vez por día, y solo los días con rueda.\n\n_Cambiar horario:_ \`/admin market time ${n} HH:MM\`\n_Probarlo ahora:_ \`/admin market now ${n}\``
         : `🔕 Mercado de granos *desactivado* en *${grupo.group_name}*.`
     );
   }
@@ -405,7 +428,7 @@ async function comandoMercado(message, client, partes) {
 
     const hora = String(partes[2] || "").trim();
     if (!HORA_REGEX.test(hora)) {
-      return message.reply("❌ Hora inválida. Usá el formato HH:MM (ej: `09:30`).\n\n`/admin mercado hora <n> HH:MM`");
+      return message.reply("❌ Hora inválida. Usá el formato HH:MM (ej: `09:30`).\n\n`/admin market time <n> HH:MM`");
     }
 
     db.setMarketTime(grupo.group_id, fmtHora(hora));
@@ -434,7 +457,7 @@ _La rueda suele cargarse cerca de las 10:30._`);
     return message.reply(`✅ Cotización enviada a *${grupo.group_name}*.`);
   }
 
-  return message.reply(`❓ No conozco \`/admin mercado ${accion}\`. Opciones: \`ver\`, \`on\`, \`off\`, \`hora\`, \`ya\`.`);
+  return message.reply(`❓ No conozco \`/admin market ${accion}\`. Opciones: \`ver\`, \`on\`, \`off\`, \`hora\`, \`ya\`.`);
 }
 
 // ─── HANDLER ──────────────────────────────────────────────────────────────────
@@ -446,7 +469,15 @@ async function handleAdminPanel(message, client) {
 
   if (!sub || sub === "help" || sub === "ayuda") return message.reply(AYUDA);
 
-  if (sub === "grupos" || sub === "groups") return comandoGrupos(message);
+  if (sub === "grupos" || sub === "groups") return comandoGrupos(message, client);
+  if (sub === "nombre" || sub === "rename") {
+    const { grupo, error } = resolverGrupo(partes[2]);
+    if (error) return message.reply(error);
+    const nuevo = partes.slice(3).join(" ").trim().slice(0, 100);
+    if (!nuevo) return message.reply("❓ Usá `/admin rename <n> <nombre>`. Ejemplo: `/admin rename 6 Consultorio de Boludos`");
+    db.renombrarGrupo(grupo.group_id, nuevo);
+    return message.reply(`🏷️ *${grupo.group_name}* ahora se llama *${nuevo}*.`);
+  }
   if (sub === "info") return comandoInfo(message, partes[2]);
   if (sub === "baja" || sub === "off") return comandoBaja(message, partes[2]);
   if (sub === "alta" || sub === "on") return comandoAlta(message, partes[2]);

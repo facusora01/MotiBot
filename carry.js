@@ -218,7 +218,7 @@ function mensajeCarryMercado(codigo, { spotUsd, spotArs, posiciones, fecha }) {
     `Esto no supone nada sobre vos: son dos precios publicados y una división.`,
     ``,
     `Si cargás *tus* costos hago la resta completa y te digo cuánto te queda:`,
-    `\`/mbot carry costos\`  _(te explico de dónde sacar cada número)_`,
+    `\`/mbot carry costs\`  _(te explico de dónde sacar cada número)_`,
     ``,
     `_Fuente: Matba Rofex. Información de referencia, no es una recomendación de venta._`,
   ].join("\n");
@@ -277,7 +277,7 @@ function mensajeCarry(codigo, { spotUsd, spotArs, posiciones, almacenajeMes, tas
     (spotArs ? `  _($ ${alertas.pesos(spotArs)})_` : "") +
     `\n\n${bloques.join("\n\n")}\n\n` +
     `⚙️ *Tus supuestos:* almacenaje ${textoAlmacenaje || `US$ ${usd(almacenajeMes, 2)}/t/mes`} · costo del dinero ${usd(tasaAnual, 1)}% anual en dólares.\n` +
-    `_Cambialos con_ \`/mbot carry costos <almacenaje> <tasa>\`\n\n` +
+    `_Cambialos con_ \`/mbot carry costs <almacenaje> <tasa>\`\n\n` +
     `_La cuenta va en dólares porque el grano y los futuros cotizan en dólares; ` +
     `los pesos son conversión al cambio de hoy. No incluye flete, comisiones ni mermas._\n\n` +
     `_Fuente: Matba Rofex. Información de referencia, no es una recomendación de venta._`

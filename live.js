@@ -46,6 +46,8 @@ const PALABRAS_COMANDO = new Set([
   "list", "sync", "stop", "phrase", "frases", "mercado", "granos", "grano",
   "precio", "carry", "alerta", "alertas", "live", "llm",
   "new", "birthday", "idea", "ideas", "admin",
+  // Los mismos en inglés (ver comandos-en.js).
+  ...require("./comandos-en").PALABRAS_EN,
 ]);
 
 const SISTEMA = [

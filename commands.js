@@ -83,7 +83,7 @@ Acá tenés todo lo que puedo hacer por vos y tu equipo:
 ▸ \`/mbot use custom\` — Iniciar transición a frases del equipo
 ▸ \`/mbot use default\` — Volver a las frases clásicas
 ▸ \`/mbot phrase on|off\` — Prender o apagar las frases, cumples e ideas
-▸ \`/mbot mercado on|off\` — Prender o apagar la pizarra de granos diaria
+▸ \`/mbot market on|off\` — Prender o apagar la pizarra de granos diaria
 
 *📚 Gestión de Frases:*
 ▸ \`/new "Frase" - Autor\` — Sumar a la colección
@@ -101,12 +101,12 @@ Acá tenés todo lo que puedo hacer por vos y tu equipo:
 ▸ \`/ideas list\` — 🌐 Panel Web con todas las ideas y sus votos (admins)
 
 *🚜 Mercado de granos:*
-▸ \`/mbot mercado\` — Cotización del día (trigo, soja, maíz, sorgo y girasol)
-▸ \`/mbot alerta soja 600000\` — Avisar cuando la pizarra toque ese precio
-▸ \`/mbot alertas\` — Ver las alertas de este chat
-▸ \`/mbot precio soja\` — Dónde cae el precio de hoy contra su historia
+▸ \`/mbot market\` — Cotización del día (trigo, soja, maíz, sorgo y girasol)
+▸ \`/mbot alert soja 600000\` — Avisar cuando la pizarra toque ese precio
+▸ \`/mbot alerts\` — Ver las alertas de este chat
+▸ \`/mbot price soja\` — Dónde cae el precio de hoy contra su historia
 ▸ \`/mbot carry soja\` — Vender hoy o guardar, con los números a la vista
-▸ \`/mbot granos\` — *Cómo se usa todo esto, explicado*
+▸ \`/mbot grains\` — *Cómo se usa todo esto, explicado*
 
 *🧠 LLM en vivo:*
 ▸ \`/mbot live\` — Charlar con el LLM de alguien del grupo (admins lo prenden)
@@ -141,16 +141,16 @@ const HELP_SOLO_MERCADO = `
 
 En este equipo estoy solo para la pizarra de cotizaciones:
 
-▸ \`/mbot mercado\` — Ver la cotización del día
-▸ \`/mbot mercado on|off\` — Prender o apagar la pizarra diaria (admins)
-▸ \`/mbot alerta soja 600000\` — Avisar cuando la pizarra toque ese precio
-▸ \`/mbot precio soja\` — Dónde cae el precio de hoy contra su historia
+▸ \`/mbot market\` — Ver la cotización del día
+▸ \`/mbot market on|off\` — Prender o apagar la pizarra diaria (admins)
+▸ \`/mbot alert soja 600000\` — Avisar cuando la pizarra toque ese precio
+▸ \`/mbot price soja\` — Dónde cae el precio de hoy contra su historia
 ▸ \`/mbot carry soja\` — Vender hoy o guardar, con los números a la vista
-▸ \`/mbot granos\` — *Cómo se usa todo esto, explicado*
+▸ \`/mbot grains\` — *Cómo se usa todo esto, explicado*
 
 _Todos los días la mando sola, apenas se publica el tablero._
 
-_📖 Cómo se usa todo esto, explicado:_ \`/mbot granos\`
+_📖 Cómo se usa todo esto, explicado:_ \`/mbot grains\`
 
 _💡 ¿Quieren además las frases diarias, los cumpleaños y las ideas? Un admin las prende con_ \`/mbot phrase on\`_._
 `.trim();
@@ -213,6 +213,22 @@ async function participantesDelGrupo(client, groupId) {
     }, groupId);
   } catch (e) {
     console.warn(`⚠️ No pude leer los participantes de ${groupId} desde el Store:`, e.message);
+    return null;
+  }
+}
+
+// Nombre del grupo leído del Store (mismo camino que participantesDelGrupo),
+// para cuando getChat() revienta con "r". null si no está cargado.
+async function nombreDelGrupo(client, groupId) {
+  try {
+    const nombre = await client.pupPage.evaluate((gid) => {
+      const wid = window.Store.WidFactory.createWid(gid);
+      const chat = window.Store.Chat?.get(wid);
+      const col = window.Store.GroupMetadata || window.Store.WAWebGroupMetadataCollection;
+      return chat?.name || chat?.formattedTitle || col?.get(wid)?.subject || chat?.groupMetadata?.subject || null;
+    }, groupId);
+    return typeof nombre === "string" && nombre.trim() ? nombre.trim().slice(0, 100) : null;
+  } catch (e) {
     return null;
   }
 }
@@ -655,10 +671,10 @@ const EXPLICACION_COSTOS = `
 
 El comando lleva dos valores, en este orden:
 
-\`/mbot carry costos <1-almacenaje> <2-tasa>\`
+\`/mbot carry costs <1-almacenaje> <2-tasa>\`
 
 Abajo te explico cada uno. Si preferís un ejemplo ya armado:
-\`/mbot carry costos 0,35% 8\`
+\`/mbot carry costs 0,35% 8\`
 _→ almacenaje 0,35% mensual · tasa 8% anual_
 
 ━━━━━━━━━━━━━━━━━━━━
@@ -684,13 +700,13 @@ Sin el signo % lo tomo como dólares por tonelada por mes.
 ━━━━━━━━━━━━━━━━━━━━
 *Ejemplos completos*
 
-\`/mbot carry costos 0,35% 8\`
+\`/mbot carry costs 0,35% 8\`
 _Dejo el grano en el acopio, me cobran 0,35% por mes, y mi prefinanciación está al 8% anual._
 
-\`/mbot carry costos 0,33 6\`
+\`/mbot carry costs 0,33 6\`
 _Silobolsa propia a US$ 0,33 por tonelada por mes, y la plata me rendiría un 6% anual si la tuviera cobrada._
 
-\`/mbot carry costos 0 0\`
+\`/mbot carry costs 0 0\`
 _Silo propio ya pagado y no cuento costo del dinero: el resultado es lo que paga el mercado, sin ningún descuento._
 
 ━━━━━━━━━━━━━━━━━━━━
@@ -707,17 +723,17 @@ const GUIA_GRANOS = `
 Cuatro cosas, de la más simple a la más pesada.
 
 *1️⃣ La pizarra del día*
-\`/mbot mercado\`
-Los precios de hoy de trigo, soja, maíz, sorgo y girasol, con cuánto cambiaron respecto de ayer y el dólar. Un admin puede hacer que llegue sola todos los días con \`/mbot mercado on\`.
+\`/mbot market\`
+Los precios de hoy de trigo, soja, maíz, sorgo y girasol, con cuánto cambiaron respecto de ayer y el dólar. Un admin puede hacer que llegue sola todos los días con \`/mbot market on\`.
 
 *2️⃣ Que te avisen cuando llegue a un precio*
-\`/mbot alerta soja 600000\`
+\`/mbot alert soja 600000\`
 Vos ponés el número; el día que la pizarra lo toque, te aviso acá. El criterio es tuyo: yo no sugiero precios, solo miro el tablero todos los días, que es lo que vos no podés hacer.
 Te aviso *una sola vez* y la borro, para no repetirlo cada día.
-Ver las tuyas: \`/mbot alertas\` · Borrar: \`/mbot alerta borrar 1\`
+Ver las tuyas: \`/mbot alerts\` · Borrar: \`/mbot alert delete 1\`
 
 *3️⃣ ¿El precio de hoy es alto o bajo?*
-\`/mbot precio soja\`
+\`/mbot price soja\`
 Te muestro dónde cae el precio de hoy comparado con su propia historia: el promedio de las últimas 30 y 90 ruedas, el mínimo y el máximo del año, y cuántas de esas ruedas estuvieron por debajo del de hoy.
 Va en dólares y en pesos. *Mirá el de dólares*: el de pesos sube también por inflación y devaluación, así que un \"+8%\" en pesos puede no ser mercado.
 No es un pronóstico. No digo si va a subir ni si conviene vender.
@@ -728,7 +744,7 @@ El mercado a término paga un precio distinto por entregar más adelante. Si esa
 
 Funciona *sin configurar nada*: te digo cuánto paga el mercado por mes de espera. Ahí la pregunta se vuelve fácil: ¿guardar te cuesta más o menos que eso?
 
-Y si querés la resta completa, cargás tus dos números una vez. \`/mbot carry costos\` te explica de dónde sacarlos: el almacenaje sale de tu liquidación del acopio o del costo de la silobolsa, y la tasa es la de tu deuda o lo que rendiría esa plata colocada.
+Y si querés la resta completa, cargás tus dos números una vez. \`/mbot carry costs\` te explica de dónde sacarlos: el almacenaje sale de tu liquidación del acopio o del costo de la silobolsa, y la tasa es la de tu deuda o lo que rendiría esa plata colocada.
 
 No pongo valores por defecto a propósito: el que tiene silo propio y el que alquila tienen respuestas opuestas, y las dos están bien.
 
@@ -745,17 +761,17 @@ const HELP_PRIVADO = `
 Acá podés tener lo tuyo, sin molestar a ningún grupo:
 
 *🚜 Mercado de granos:*
-▸ \`/mbot mercado\` — Cotización del día
-▸ \`/mbot mercado on\` — Que te la mande todos los días acá
-▸ \`/mbot mercado off\` — Dejar de recibirla
+▸ \`/mbot market\` — Cotización del día
+▸ \`/mbot market on\` — Que te la mande todos los días acá
+▸ \`/mbot market off\` — Dejar de recibirla
 
 *🔔 Alertas de precio:*
-▸ \`/mbot alerta soja 600000\` — Avisarte cuando la soja toque ese precio
-▸ \`/mbot alertas\` — Ver las tuyas
-▸ \`/mbot alerta borrar <n>\` — Borrar una
-▸ \`/mbot precio soja\` — Dónde cae el precio de hoy contra su historia
+▸ \`/mbot alert soja 600000\` — Avisarte cuando la soja toque ese precio
+▸ \`/mbot alerts\` — Ver las tuyas
+▸ \`/mbot alert delete <n>\` — Borrar una
+▸ \`/mbot price soja\` — Dónde cae el precio de hoy contra su historia
 ▸ \`/mbot carry soja\` — Vender hoy o guardar, con tus costos
-▸ \`/mbot granos\` — *Cómo se usa todo esto, explicado*
+▸ \`/mbot grains\` — *Cómo se usa todo esto, explicado*
 
 *✨ Frases:*
 ▸ \`/mbot phrase\` — Una frase ahora (una cada 12 h)
@@ -1222,7 +1238,7 @@ async function handleCommand(message, client) {
       // Mismo criterio que la cotización: donde la pizarra está apagada,
       // esto tampoco corresponde.
       if (!esChatPrivado(message) && !db.isMarketEnabled(groupId)) {
-        return message.reply("🔕 La pizarra de granos está apagada en este equipo.\n\n_Un admin puede prenderla con_ `/mbot mercado on`.");
+        return message.reply("🔕 La pizarra de granos está apagada en este equipo.\n\n_Un admin puede prenderla con_ `/mbot market on`.");
       }
 
       // /mbot carry costos <almacenaje> <tasa>
@@ -1239,7 +1255,7 @@ async function handleCommand(message, client) {
 
         // Sin dos números no hay nada que guardar. El chequeo es sobre la
         // CANTIDAD de valores y no sobre Number(): Number("") es 0, no NaN, y
-        // un `/mbot carry costos` pelado llegaba a guardar "almacenaje gratis
+        // un `/mbot carry costs` pelado llegaba a guardar "almacenaje gratis
         // y dinero gratis" en silencio, supuestos con los que cualquier carry
         // da positivo. Un cero explícito sí vale (silo propio ya pagado).
         const faltanDatos = valores.length < 2;
@@ -1281,8 +1297,8 @@ async function handleCommand(message, client) {
       if (!grano) {
         return message.reply(
           subcommand === "precio"
-            ? "📊 `/mbot precio <grano>` — dónde cae el precio de hoy contra su historia." + `\n\n` + "Granos: trigo, soja, maíz, sorgo, girasol."
-            : "🚜 `/mbot carry <grano>` — vender hoy o guardar, con los números a la vista." + `\n\n` + "Granos con futuros: soja, trigo, maíz." + `\n\n` + "_Funciona sin configurar nada: te digo cuánto paga el mercado por mes de espera. Si además cargás tus costos con_ `/mbot carry costos`_, hago la resta completa._"
+            ? "📊 `/mbot price <grano>` — dónde cae el precio de hoy contra su historia." + `\n\n` + "Granos: trigo, soja, maíz, sorgo, girasol."
+            : "🚜 `/mbot carry <grano>` — vender hoy o guardar, con los números a la vista." + `\n\n` + "Granos con futuros: soja, trigo, maíz." + `\n\n` + "_Funciona sin configurar nada: te digo cuánto paga el mercado por mes de espera. Si además cargás tus costos con_ `/mbot carry costs`_, hago la resta completa._"
         );
       }
 
@@ -1388,7 +1404,7 @@ async function handleCommand(message, client) {
     // se tocó el precio que le pidieron mirar.
     if (subcommand === "alerta" || subcommand === "alertas") {
       const USO_ALERTA =
-        "🔔 *Alertas de precio*\n\n`/mbot alerta <grano> <precio>`\n\nEjemplo: `/mbot alerta soja 600000` — te aviso el día que la pizarra la toque.\nGranos: trigo, soja, maíz, sorgo, girasol.\n\nVer las que tenés: `/mbot alertas`\nBorrar una: `/mbot alerta borrar <n>`";
+        "🔔 *Alertas de precio*\n\n`/mbot alert <grano> <precio>`\n\nEjemplo: `/mbot alert soja 600000` — te aviso el día que la pizarra la toque.\nGranos: trigo, soja, maíz, sorgo, girasol.\n\nVer las que tenés: `/mbot alerts`\nBorrar una: `/mbot alert delete <n>`";
 
       // Listado: /mbot alertas, o /mbot alerta list.
       const pideListado =
@@ -1402,7 +1418,7 @@ async function handleCommand(message, client) {
         return message.reply(
           `🔔 *Alertas de este chat* (${mias.length})\n\n` +
           mias.map((a, i) => alertas.describir(a, i)).join("\n") +
-          `\n\n_Borrar una:_ \`/mbot alerta borrar <n>\``
+          `\n\n_Borrar una:_ \`/mbot alert delete <n>\``
         );
       }
 
@@ -1414,7 +1430,7 @@ async function handleCommand(message, client) {
         if (!Number.isInteger(n) || n < 1 || n > mias.length) {
           return message.reply(
             mias.length
-              ? `❌ Elegí un número del 1 al ${mias.length} (mirá \`/mbot alertas\`).`
+              ? `❌ Elegí un número del 1 al ${mias.length} (mirá \`/mbot alerts\`).`
               : "🔔 No hay ninguna alerta para borrar en este chat."
           );
         }
@@ -1441,7 +1457,7 @@ async function handleCommand(message, client) {
 
       if (db.countAlertasDeChat(groupId) >= db.MAX_ALERTAS_POR_CHAT) {
         return message.reply(
-          `❌ Este chat ya tiene ${db.MAX_ALERTAS_POR_CHAT} alertas, que es el tope. Borrá alguna con \`/mbot alerta borrar <n>\`.`
+          `❌ Este chat ya tiene ${db.MAX_ALERTAS_POR_CHAT} alertas, que es el tope. Borrá alguna con \`/mbot alert delete <n>\`.`
         );
       }
 
@@ -1678,7 +1694,7 @@ async function handleCommand(message, client) {
         `Dejo de mandar la frase diaria, los cumpleaños y las ideas, y no respondo esos comandos.\n\n` +
         (conMercado
           ? `Sigo con la pizarra de granos de todos los días.`
-          : `⚠️ Ojo: acá tampoco está prendido el mercado, así que no voy a hacer nada. Prendelo con \`/mbot mercado on\`.`) +
+          : `⚠️ Ojo: acá tampoco está prendido el mercado, así que no voy a hacer nada. Prendelo con \`/mbot market on\`.`) +
         `\n\n_Para volver atrás:_ \`/mbot phrase on\``
       );
     }
@@ -1780,7 +1796,7 @@ async function handleCommand(message, client) {
         // piden: es información pública y no compromete a nada.
         if (!esChatPrivado(message)) return message.reply(NO_REGISTRADO);
         if (arg) {
-          return message.reply("🚜 Todavía no te mando la pizarra por acá.\n\n_Para recibirla todos los días:_ `/mbot mercado on`");
+          return message.reply("🚜 Todavía no te mando la pizarra por acá.\n\n_Para recibirla todos los días:_ `/mbot market on`");
         }
         return responderCotizacion(message);
       }
@@ -1800,17 +1816,17 @@ async function handleCommand(message, client) {
 
         return message.reply(
           encender
-            ? `🚜 *Pizarra de granos activada.*\n\nTodos los días les paso la cotización, apenas se publica el tablero (no antes de las ${settings?.market_time || "09:00"} hs).\n\n_Verla ahora:_ \`/mbot mercado\`
-_Además puedo avisarles cuando un grano toque un precio, y ayudarlos con la cuenta de vender o guardar:_ \`/mbot granos\``
-            : `🔕 Listo, no mando más la cotización diaria.\n\n_Para volver a prenderla:_ \`/mbot mercado on\``
+            ? `🚜 *Pizarra de granos activada.*\n\nTodos los días les paso la cotización, apenas se publica el tablero (no antes de las ${settings?.market_time || "09:00"} hs).\n\n_Verla ahora:_ \`/mbot market\`
+_Además puedo avisarles cuando un grano toque un precio, y ayudarlos con la cuenta de vender o guardar:_ \`/mbot grains\``
+            : `🔕 Listo, no mando más la cotización diaria.\n\n_Para volver a prenderla:_ \`/mbot market on\``
         );
       }
 
-      if (arg) return message.reply("❌ Usá `/mbot mercado`, `/mbot mercado on` o `/mbot mercado off`.");
+      if (arg) return message.reply("❌ Usá `/mbot market`, `/mbot market on` o `/mbot market off`.");
 
       // Sin argumento: la cotización, si la pizarra está prendida en el grupo.
       if (!db.isMarketEnabled(groupId)) {
-        return message.reply("🔕 La pizarra de granos está apagada en este equipo.\n\n_Un admin puede prenderla con_ `/mbot mercado on`.");
+        return message.reply("🔕 La pizarra de granos está apagada en este equipo.\n\n_Un admin puede prenderla con_ `/mbot market on`.");
       }
 
       return responderCotizacion(message);
@@ -1840,8 +1856,11 @@ _Además puedo avisarles cuando un grano toque un precio, y ayudarlos con la cue
       } catch (e) {
         console.warn(`⚠️ No pude leer el nombre del chat ${groupId}:`, e.message);
       }
+      // Plan B: el nombre directo del Store, sin pasar por getChat().
+      if (!nombreChat) nombreChat = await nombreDelGrupo(client, groupId);
 
-      db.addGroup(groupId, nombreChat || `Equipo ${String(groupId).split("@")[0].slice(-4)}`);
+      // null si no se pudo leer: addGroup conserva el nombre que ya tenía.
+      db.addGroup(groupId, nombreChat);
       return message.reply(
         `✅ *¡Qué lindo estar acá!*\n\n` +
         `Hola a todos, soy **MotiBot** 🤖✨. A partir de mañana voy a pasar por este equipo todos los días para dejarles una frase motivacional y ayudarlos a arrancar con todo.\n\n` +
@@ -2337,4 +2356,6 @@ module.exports = {
   handleCommand, clearAdminCache, handleReaction, sincronizarVotos, esSuperAdmin,
   // Para live.js
   isAdmin, resolverNumero, participantesDelGrupo, nombreDeMensaje,
+  // Para panel.js
+  nombreDelGrupo,
 };

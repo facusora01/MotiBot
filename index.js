@@ -15,6 +15,7 @@ const alertas = require("./alertas");
 const historia = require("./historia");
 const live = require("./live");
 const llm = require("./llm");
+const { traducirComando } = require("./comandos-en");
 
 const HORA_ENVIO = process.env.HORA_ENVIO || "08:00";
 
@@ -837,6 +838,10 @@ async function processMessage(message) {
   // lo ve como si hubieran tipeado /mbot.
   const porArroba = comandoDeArroba(message);
   if (porArroba) message.body = porArroba;
+
+  // Los comandos oficiales son en inglés (/mbot market): por dentro se
+  // traducen a los nombres históricos, que también siguen andando.
+  if (message.body) message.body = traducirComando(message.body);
 
   const body = message.body?.trim() || "";
 

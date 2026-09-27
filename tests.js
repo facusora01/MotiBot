@@ -200,6 +200,41 @@ async function testsLlm() {
     `el link es al código en GitHub (${d.codigo})`);
   chequear(!/ghp_|@github\.com|:\/\/[^/]*@/.test(JSON.stringify(d)), "los links no llevan credenciales");
 
+  console.log("\n--- Test 13c: /mbot add no pisa el nombre del grupo ---");
+  const gNombre = "999000000000001915@g.us";
+  db.addGroup(gNombre, "Los Pibes");
+  db.addGroup(gNombre, null);
+  chequear(db.getGroup(gNombre).group_name === "Los Pibes", "sin nombre legible, conserva el que tenía");
+  db.addGroup(gNombre, "Los Pibes 2.0");
+  chequear(db.getGroup(gNombre).group_name === "Los Pibes 2.0", "con nombre legible, lo actualiza");
+  db.deleteGroupCompleto(gNombre);
+  db.addGroup(gNombre, null);
+  chequear(db.getGroup(gNombre).group_name === "Equipo 1915" && db.esNombreDeRelleno(gNombre, "Equipo 1915"),
+    "un grupo nuevo sin nombre recibe el de relleno");
+  db.deleteGroupCompleto(gNombre);
+
+  console.log("\n--- Test 13d: Comandos en inglés ---");
+  const { traducirComando } = require("./comandos-en");
+  const traducciones = [
+    ["/mbot market on", "/mbot mercado on"], ["/mbot alerts", "/mbot alertas"], ["/mbot alert delete 2", "/mbot alerta delete 2"],
+    ["/mbot price soja", "/mbot precio soja"], ["/mbot grains", "/mbot granos"], ["/mbot carry costs 0,35% 8", "/mbot carry costos 0,35% 8"],
+    ["/admin groups", "/admin groups"], ["/admin market preview", "/admin mercado ver"], ["/admin disable 3", "/admin baja 3"],
+    ["/admin delete disabled confirm", "/admin delete bajas confirmar"], ["/admin history load", "/admin historia cargar"],
+    ["/admin say 2 market\nhola", "/admin say 2 market\nhola"], ["/mbot mercado", "/mbot mercado"],
+  ];
+  const fallan = traducciones.filter(([e, s]) => traducirComando(e) !== s);
+  chequear(!fallan.length, `traduce ${traducciones.length} comandos en inglés${fallan.length ? ` (fallan: ${fallan.map((f) => f[0]).join(", ")})` : ""}`);
+
+  // Lo que se le muestra a la gente (entre comillas invertidas) ya no ofrece
+  // los nombres viejos en español.
+  const RE_VIEJO = /\\?`\/(mbot (mercado|granos|grano|precio|alertas?|frases)|admin (grupos|mercado|borrar|salir|baja|alta|decir|nombre|historia))\b/;
+  for (const archivo of ["commands.js", "panel.js", "alertas.js", "carry.js", "historia.js", "mercado.js", "live.js"]) {
+    const codigo = fs.readFileSync(path.join(__dirname, archivo), "utf8");
+    const m = codigo.match(RE_VIEJO);
+    chequear(!m, `${archivo} muestra los comandos en inglés${m ? ` (quedó: ${m[0]})` : ""}`);
+  }
+  await simulate(traducirComando("/mbot market"), false, false, null);
+
   console.log("\n--- Test 14: Comandos /mbot live y /mbot llm ---");
   await simulate("/mbot live", false, false, "Solo los admins");
   await simulate("/mbot live", true, false, "No hay ningún LLM disponible");
