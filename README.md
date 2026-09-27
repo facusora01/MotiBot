@@ -222,8 +222,8 @@ Funnel la ruta o no.
   similares, o si el gateway se lanza con más permisos.
 
 **Del lado del usuario: su PC tampoco se toca.** Explicado para quien lo
-instala en [docs/AGENTE.md](docs/AGENTE.md). `/mbot llm add` manda el agente
-desde GitHub, fijado al commit que corre el bot, con su huella SHA-256 para
+instala en [docs/AGENTE.md](docs/AGENTE.md). `/mbot llm add` manda el link al
+agente en GitHub (rama `main`, la que se deploya), con su huella SHA-256 para
 verificarlo (el repo sale de `LLM_REPO`, por defecto `facusora01/MotiBot`).
 - El agente se corre con `node --permission motibot-agent.js ...` y se niega a
   arrancar sin ese encierro: no puede leer ni escribir archivos, lanzar

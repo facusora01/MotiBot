@@ -194,15 +194,11 @@ async function testsLlm() {
 
   console.log("\n--- Test 13b: Descarga verificable del agente ---");
   const d = require("./llm").descargaAgente();
-  if (!d) {
-    console.log("⚠️ Sin checkout de git: se salta (el bot cae a la descarga del gateway).");
-  } else {
-    const huella = require("crypto").createHash("sha256").update(fs.readFileSync(path.join(__dirname, "motibot-agent.js"))).digest("hex");
-    chequear(d.huella === huella, "la huella que se muestra es la del archivo");
-    chequear(/^https:\/\/raw\.githubusercontent\.com\/[^/]+\/[^/]+\/[0-9a-f]{40}\/motibot-agent\.js$/.test(d.descarga),
-      "la descarga es de GitHub, fijada a un commit");
-    chequear(!/ghp_|@github\.com|:\/\/[^/]*@/.test(JSON.stringify(d)), "los links no llevan credenciales");
-  }
+  const huella = require("crypto").createHash("sha256").update(fs.readFileSync(path.join(__dirname, "motibot-agent.js"))).digest("hex");
+  chequear(d.huella === huella, "la huella que se muestra es la del archivo");
+  chequear(/^https:\/\/github\.com\/[^/]+\/[^/]+\/blob\/main\/motibot-agent\.js$/.test(d.codigo),
+    `el link es al código en GitHub (${d.codigo})`);
+  chequear(!/ghp_|@github\.com|:\/\/[^/]*@/.test(JSON.stringify(d)), "los links no llevan credenciales");
 
   console.log("\n--- Test 14: Comandos /mbot live y /mbot llm ---");
   await simulate("/mbot live", false, false, "Solo los admins");

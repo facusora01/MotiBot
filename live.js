@@ -309,23 +309,17 @@ async function comandoLlm(message, client, arg) {
   // De GitHub, fijado al commit que corre el bot (código a la vista y huella
   // verificable). Si no se puede fijar, del propio gateway.
   const gh = llm.descargaAgente();
-  const descarga = gh ? gh.descarga : `${llm.urlPublica()}/motibot-agent.js`;
   const chat = chatDe(message);
 
   await message.reply(
     `🧠 *Sumá tu LLM a MotiBot*\n\n` +
-    `*1.* Instalá Ollama (ollama.com) y bajá un modelo:\n` +
-    `\`ollama pull qwen3:8b\`\n\n` +
-    `*2.* Bajá el agente. Es un archivo de código abierto, publicado en GitHub (necesita Node 22 o más nuevo):\n` +
-    `${descarga}\n` +
-    `_Si lo abrís vas a ver su código: es normal, así cualquiera puede leerlo. Para guardarlo: clic derecho en el link → "Guardar enlace como…", o en la terminal:_\n` +
-    `\`curl.exe -o motibot-agent.js ${descarga}\`  _(en Mac/Linux, \`curl\` sin el .exe)_\n` +
-    (gh ? `Qué hace, explicado simple: ${gh.explicacion}\n` : "") +
-    `\n*3.* Correlo con el token que te mando abajo:\n` +
+    `*1.* Instalá Ollama (ollama.com) y bajá un modelo: \`ollama pull qwen3:8b\`\n\n` +
+    `*2.* Bajá el agente (botón ⬇️ de GitHub):\n${gh.codigo}\n` +
+    `Qué hace: ${gh.explicacion}\n\n` +
+    `*3.* Correlo con el token de abajo (necesita Node 22+):\n` +
     `\`node --permission motibot-agent.js --server ${llm.urlWebSocket()} --model qwen3:8b --token <token>\`\n\n` +
-    `👀 En los grupos donde se use tu LLM, lo que le escriban al bot se procesa en tu PC.\n` +
-    `⚠️ El token es una contraseña. Si se filtra, \`/mbot llm add\` genera otro y anula este.` +
-    (anterior ? `\n\n_Generé un token nuevo: el anterior dejó de servir._` : "")
+    `⚠️ El token es una contraseña: no lo compartas.` +
+    (anterior ? `\n_Generé uno nuevo: el anterior dejó de servir._` : "")
   );
 
   await client.sendMessage(chat,
@@ -335,7 +329,7 @@ async function comandoLlm(message, client, arg) {
     `Aunque el archivo fuera malo, no podría tocar tu PC. Probalo vos:\n` +
     `\`node --permission -e "require('fs').readdirSync('.')"\`\n` +
     `Node tiene que contestar *ERR_ACCESS_DENIED*: ni siquiera deja ver qué archivos hay.\n\n` +
-    (gh
+    (gh.huella
       ? `🔍 *Comprobá que es el original.* Esta es su huella; si le cambiaran una sola letra, sería otra:\n` +
         `\`${gh.huella}\`\n` +
         `Windows: \`certutil -hashfile motibot-agent.js SHA256\`\n` +
