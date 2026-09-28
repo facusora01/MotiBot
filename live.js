@@ -194,8 +194,9 @@ async function responder(message, client, { pregunta, citado }) {
     return `✂️ Es muy largo para mí: resumilo en menos de ${P.LIMITES.pregunta} caracteres.`;
   }
 
+  // El super admin no tiene espera entre preguntas.
   const clave = `${groupId}|${message.author || message.from}`;
-  if (Date.now() - (ultimoUso.get(clave) || 0) < COOLDOWN_USUARIO) {
+  if (Date.now() - (ultimoUso.get(clave) || 0) < COOLDOWN_USUARIO && !(await cmd().esSuperAdmin(message))) {
     return "⏳ Dame unos segundos entre pregunta y pregunta.";
   }
   if (gruposPensando.has(groupId) || llm.ocupado(live.llm_id)) {
@@ -525,17 +526,20 @@ async function comandoImagen(message, client) {
     return { texto: `✂️ Describila en menos de ${P.LIMITES.promptImagen} caracteres.` };
   }
 
-  // Límites de uso.
+  // Límites de uso. El super admin no tiene ninguno (ni suma al cupo del grupo).
   const autor = message.author || message.from;
   const hoy = hoyArgentina();
   const claveUsuario = `${groupId}|${autor}`;
-  const espera = LIMITE_IMAGEN.esperaUsuario - (Date.now() - (ultimaImagen.get(claveUsuario) || 0));
-  if (espera > 0) return { texto: `⏳ Podés pedir otra imagen en ${Math.ceil(espera / 1000)} s.` };
-  if ((imagenesDelDia.get(`${hoy}|${claveUsuario}`) || 0) >= LIMITE_IMAGEN.porDiaUsuario) {
-    return { texto: `🛑 Ya pediste ${LIMITE_IMAGEN.porDiaUsuario} imágenes hoy. Mañana podés pedir más.` };
-  }
-  if ((imagenesDelDia.get(`${hoy}|${groupId}`) || 0) >= LIMITE_IMAGEN.porDiaGrupo) {
-    return { texto: `🛑 Este grupo ya pidió ${LIMITE_IMAGEN.porDiaGrupo} imágenes hoy. Mañana hay más.` };
+  const sinLimites = await cmd().esSuperAdmin(message);
+  if (!sinLimites) {
+    const espera = LIMITE_IMAGEN.esperaUsuario - (Date.now() - (ultimaImagen.get(claveUsuario) || 0));
+    if (espera > 0) return { texto: `⏳ Podés pedir otra imagen en ${Math.ceil(espera / 1000)} s.` };
+    if ((imagenesDelDia.get(`${hoy}|${claveUsuario}`) || 0) >= LIMITE_IMAGEN.porDiaUsuario) {
+      return { texto: `🛑 Ya pediste ${LIMITE_IMAGEN.porDiaUsuario} imágenes hoy. Mañana podés pedir más.` };
+    }
+    if ((imagenesDelDia.get(`${hoy}|${groupId}`) || 0) >= LIMITE_IMAGEN.porDiaGrupo) {
+      return { texto: `🛑 Este grupo ya pidió ${LIMITE_IMAGEN.porDiaGrupo} imágenes hoy. Mañana hay más.` };
+    }
   }
 
   const ids = await identidadesDe(client, message);
@@ -552,9 +556,11 @@ async function comandoImagen(message, client) {
     return { texto: "⏳ Estoy terminando otra cosa, probá en un ratito." };
   }
 
-  ultimaImagen.set(claveUsuario, Date.now());
-  imagenesDelDia.set(`${hoy}|${claveUsuario}`, (imagenesDelDia.get(`${hoy}|${claveUsuario}`) || 0) + 1);
-  imagenesDelDia.set(`${hoy}|${groupId}`, (imagenesDelDia.get(`${hoy}|${groupId}`) || 0) + 1);
+  if (!sinLimites) {
+    ultimaImagen.set(claveUsuario, Date.now());
+    imagenesDelDia.set(`${hoy}|${claveUsuario}`, (imagenesDelDia.get(`${hoy}|${claveUsuario}`) || 0) + 1);
+    imagenesDelDia.set(`${hoy}|${groupId}`, (imagenesDelDia.get(`${hoy}|${groupId}`) || 0) + 1);
+  }
   gruposDibujando.add(groupId);
   try { await message.react("🎨"); } catch (e) { /* no es importante */ }
 
