@@ -114,6 +114,11 @@ Acá tenés todo lo que puedo hacer por vos y tu equipo:
 ▸ \`/mbot live reset\` — Que se olvide de lo que se charló
 ▸ \`/mbot llm add\` — Sumar tu propio LLM (Ollama), por privado
 
+*🎨 Imágenes (con el LLM de alguien del grupo):*
+▸ \`/mbot image <descripción>\` — Pedir una imagen
+▸ \`/mbot image on|off\` — Prenderlas o apagarlas (admins)
+▸ \`/mbot image delete\` — Borrar una, respondiéndola (admins)
+
 *💡 Información y Ansiedad:*
 ▸ \`/mbot time\` — ⏳ Cuenta regresiva para activación de librería custom
 ▸ \`/mbot status\` — Ver reporte detallado de configuración

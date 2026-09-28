@@ -45,7 +45,7 @@ const PALABRAS_COMANDO = new Set([
   "help", "status", "time", "add", "remove", "lang", "use", "clock", "freq",
   "list", "sync", "stop", "phrase", "frases", "mercado", "granos", "grano",
   "precio", "carry", "alerta", "alertas", "live", "llm",
-  "new", "birthday", "idea", "ideas", "admin",
+  "new", "birthday", "idea", "ideas", "admin", "image", "imagen",
   // Los mismos en inglés (ver comandos-en.js).
   ...require("./comandos-en").PALABRAS_EN,
 ]);
@@ -167,9 +167,10 @@ function preguntaDelMensaje(message, esIdDelBot) {
   const m = body.match(/^@(\S+)\s*([\s\S]*)$/);
   if (m && esIdDelBot(m[1])) return pedido(m[2]);
 
-  // Reply a una respuesta del LLM.
+  // Reply a una respuesta del LLM (de texto: responderle a una imagen no es
+  // seguir la charla).
   const citado = message.hasQuotedMsg ? message._data?.quotedMsg : null;
-  if (!citado || !esRespuestaLLM(citado.body)) return null;
+  if (!citado || (citado.type && citado.type !== "chat") || !esRespuestaLLM(citado.body)) return null;
   const part = message._data?.quotedParticipant;
   if (!esIdDelBot(soloUser(part))) return null;
   return estaActivo(groupId) ? { pregunta: body, citado: textoDeRespuesta(citado.body) } : null;
@@ -267,6 +268,34 @@ function esDe(agente, ids) {
   return [agente.owner_phone, agente.owner_lid].some((x) => x && (x === ids.phone || x === ids.lid));
 }
 
+// Elige un LLM conectado que cumpla `sirve`: el de quien lo pide o, si no
+// tiene, el de otro miembro del grupo. Si no se pueden leer los
+// participantes, solo el propio: nunca se le manda nada del grupo a la PC de
+// alguien que no está en él.
+async function elegirLlm(client, message, groupId, ids, sirve, preferido = null) {
+  const candidatos = llm.habilitado() ? llm.conectados().filter(sirve) : [];
+  if (!candidatos.length) return null;
+
+  if (preferido) {
+    const p = candidatos.find((a) => a.id === preferido);
+    if (p) return p;
+  }
+
+  const propio = candidatos.find((a) => esDe(a, ids));
+  if (propio) return propio;
+
+  const participantes = await cmd().participantesDelGrupo(client, groupId);
+  if (!participantes) return null;
+  const miembros = new Set();
+  for (const p of participantes) {
+    for (const id of [p.id?._serialized, p.lid, p.pn, p.phoneNumber]) {
+      const u = soloUser(id);
+      if (u) miembros.add(u);
+    }
+  }
+  return candidatos.find((a) => [a.owner_phone, a.owner_lid].some((x) => x && miembros.has(x))) || null;
+}
+
 // ─── /mbot llm (por privado) ─────────────────────────────────────────────────
 const USO_LLM =
   "🧠 *Tu LLM en MotiBot*\n\n" +
@@ -322,7 +351,7 @@ async function comandoLlm(message, client, arg) {
     `🧠 *Sumá tu LLM a MotiBot*\n\n` +
     `Necesitás *Ollama* (ollama.com) y *Node 22+* (nodejs.org).\n\n` +
     `*Windows:* bajá el instalador (botón ⬇️ de GitHub), clic derecho → *Ejecutar con PowerShell*. ` +
-    `Te pide el token de abajo y te deja el acceso directo *MotiBot LLM* en el escritorio:\n${gh.instalador}\n\n` +
+    `Te pide el token de abajo, te ofrece sumar generación de imágenes y te deja el acceso directo *MotiBot LLM* en el escritorio:\n${gh.instalador}\n\n` +
     `*Mac/Linux:* bajá el agente (${gh.codigo}) y correlo:\n` +
     `\`node --permission motibot-agent.js --server ${llm.urlWebSocket()} --model qwen3.5:9b --token <token>\`\n\n` +
     `Qué hace, explicado: ${gh.explicacion}\n\n` +
@@ -395,29 +424,8 @@ async function comandoLive(message, client, arg) {
     "🔌 No hay ningún LLM disponible ahora.\n\n" +
     "_Solo uso LLMs de gente que está en el grupo. Cualquiera puede sumar el suyo con_ `/mbot llm add` _por privado._";
 
-  const conectados = llm.habilitado() ? llm.conectados() : [];
-  if (!conectados.length) return message.reply(sinLlm);
-
-  // Primero el LLM de quien lo prende; si no tiene, el de otro miembro. Si no
-  // se pueden leer los participantes, solo el propio: no le mandamos los
-  // mensajes del grupo a la PC de alguien que no está en él.
   const ids = await identidadesDe(client, message);
-  let elegido = conectados.find((a) => esDe(a, ids));
-
-  if (!elegido) {
-    const participantes = await cmd().participantesDelGrupo(client, groupId);
-    if (participantes) {
-      const miembros = new Set();
-      for (const p of participantes) {
-        for (const id of [p.id?._serialized, p.lid, p.pn, p.phoneNumber]) {
-          const u = soloUser(id);
-          if (u) miembros.add(u);
-        }
-      }
-      elegido = conectados.find((a) => [a.owner_phone, a.owner_lid].some((x) => x && miembros.has(x)));
-    }
-  }
-
+  const elegido = await elegirLlm(client, message, groupId, ids, () => true);
   if (!elegido) return message.reply(sinLlm);
 
   db.setGroupLive(groupId, elegido.id, ids.phone || ids.lid);
@@ -437,7 +445,159 @@ async function comandoLive(message, client, arg) {
   );
 }
 
+// ─── /mbot image (en un grupo) ───────────────────────────────────────────────
+// Imágenes con el LLM de alguien del grupo que tenga la generación prendida.
+// La imagen que devuelve el agente nunca llega tal cual a WhatsApp: imagen.js
+// la re-codifica desde los píxeles en un proceso encerrado.
+const imagen = require("./imagen");
+
+const LIMITE_IMAGEN = {
+  esperaUsuario: 2 * 60 * 1000, // una imagen cada 2 minutos por persona
+  porDiaUsuario: 10,
+  porDiaGrupo: 30,
+};
+const ultimaImagen = new Map();   // "grupo|autor" -> timestamp
+const imagenesDelDia = new Map(); // "fecha|grupo" y "fecha|grupo|autor" -> cantidad
+const gruposDibujando = new Set();
+
+const hoyArgentina = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Argentina/Buenos_Aires" }).format(new Date());
+
+setInterval(() => {
+  const hoy = hoyArgentina();
+  for (const clave of imagenesDelDia.keys()) if (!clave.startsWith(hoy)) imagenesDelDia.delete(clave);
+  const limite = Date.now() - LIMITE_IMAGEN.esperaUsuario;
+  for (const [clave, ts] of ultimaImagen) if (ts < limite) ultimaImagen.delete(clave);
+}, 10 * 60 * 1000).unref();
+
+const USO_IMAGEN =
+  "🎨 *Imágenes*\n\n" +
+  "▸ `/mbot image <descripción>` — Pedir una imagen\n" +
+  "▸ `/mbot image on|off` — Prenderlas o apagarlas en el grupo (admins)\n" +
+  "▸ `/mbot image delete` — Borrar una imagen, respondiéndola (admins)\n\n" +
+  "_Se dibujan con el LLM de alguien del grupo que tenga la generación de imágenes prendida._";
+
+// ¿Es un /mbot image de un grupo? index.js lo atiende aparte de los demás
+// comandos: una imagen tarda más que el tiempo que se le da a un comando.
+function esPedidoDeImagen(message) {
+  const body = String(message.body || "").trim();
+  return /^\/mbot\s+image(\s|$)/i.test(body) && chatDe(message).endsWith("@g.us");
+}
+
+// Devuelve lo que hay que contestar: { texto } o { imagen: { data, caption } }
+// (data = JPEG ya saneado, en base64). null si no hay que contestar nada.
+async function comandoImagen(message, client) {
+  const groupId = chatDe(message);
+  const resto = String(message.body || "").trim().replace(/^\/mbot\s+image/i, "").trim();
+  const arg = (resto.split(/\s+/)[0] || "").toLowerCase();
+
+  const group = db.getGroup(groupId);
+  if (!group || !group.active) {
+    return { texto: "❌ ¡Todavía no me adoptaron en este equipo!\nAlguien con permisos tiene que usar `/mbot add`." };
+  }
+  if (!resto) {
+    return { texto: `${USO_IMAGEN}\n\n${db.isImagesEnabled(groupId) ? "🟢 Prendidas en este grupo." : "⚪ Apagadas en este grupo."}` };
+  }
+
+  // Lo que solo pueden hacer los admins.
+  if (["on", "off", "delete", "borrar"].includes(arg) && resto.split(/\s+/).length === 1) {
+    if (!(await cmd().isAdmin(message, client))) {
+      return { texto: "🔒 Solo los admins pueden prender, apagar o borrar imágenes." };
+    }
+    if (arg === "on" || arg === "off") {
+      db.setImagesEnabled(groupId, arg === "on");
+      return {
+        texto: arg === "on"
+          ? "🎨 Imágenes prendidas. Pidan una con `/mbot image <descripción>`.\n\n" +
+            "_Se dibujan con el LLM de alguien del grupo. Un admin puede borrar cualquiera respondiéndola con_ `/mbot image delete`."
+          : "⚪ Imágenes apagadas en este grupo.",
+      };
+    }
+    return borrarImagen(message);
+  }
+
+  if (!db.isImagesEnabled(groupId)) {
+    return { texto: "⚪ Las imágenes están apagadas en este grupo.\n\n_Un admin las prende con_ `/mbot image on`." };
+  }
+
+  const prompt = P.limpiarPromptImagen(resto);
+  if (!prompt) return { texto: USO_IMAGEN };
+  if (resto.length > P.LIMITES.promptImagen) {
+    return { texto: `✂️ Describila en menos de ${P.LIMITES.promptImagen} caracteres.` };
+  }
+
+  // Límites de uso.
+  const autor = message.author || message.from;
+  const hoy = hoyArgentina();
+  const claveUsuario = `${groupId}|${autor}`;
+  const espera = LIMITE_IMAGEN.esperaUsuario - (Date.now() - (ultimaImagen.get(claveUsuario) || 0));
+  if (espera > 0) return { texto: `⏳ Podés pedir otra imagen en ${Math.ceil(espera / 1000)} s.` };
+  if ((imagenesDelDia.get(`${hoy}|${claveUsuario}`) || 0) >= LIMITE_IMAGEN.porDiaUsuario) {
+    return { texto: `🛑 Ya pediste ${LIMITE_IMAGEN.porDiaUsuario} imágenes hoy. Mañana podés pedir más.` };
+  }
+  if ((imagenesDelDia.get(`${hoy}|${groupId}`) || 0) >= LIMITE_IMAGEN.porDiaGrupo) {
+    return { texto: `🛑 Este grupo ya pidió ${LIMITE_IMAGEN.porDiaGrupo} imágenes hoy. Mañana hay más.` };
+  }
+
+  const ids = await identidadesDe(client, message);
+  const live = db.getGroupLive(groupId);
+  const elegido = await elegirLlm(client, message, groupId, ids,
+    (a) => a.caps?.includes("image"), live?.llm_id);
+  if (!elegido) {
+    return {
+      texto: "🔌 No hay nadie del grupo con la generación de imágenes conectada ahora.\n\n" +
+        "_Se prende desde el acceso directo MotiBot LLM, eligiendo el modelo de imágenes._",
+    };
+  }
+  if (gruposDibujando.has(groupId) || llm.ocupado(elegido.id)) {
+    return { texto: "⏳ Estoy terminando otra cosa, probá en un ratito." };
+  }
+
+  ultimaImagen.set(claveUsuario, Date.now());
+  imagenesDelDia.set(`${hoy}|${claveUsuario}`, (imagenesDelDia.get(`${hoy}|${claveUsuario}`) || 0) + 1);
+  imagenesDelDia.set(`${hoy}|${groupId}`, (imagenesDelDia.get(`${hoy}|${groupId}`) || 0) + 1);
+  gruposDibujando.add(groupId);
+  try { await message.react("🎨"); } catch (e) { /* no es importante */ }
+
+  try {
+    const crudo = await llm.pedirImagen(elegido.id, prompt);
+    const limpia = await imagen.sanear(crudo);
+    const pedidoPor = P.limpiarRespuesta(await cmd().nombreDeMensaje(client, message)).replace(/\s+/g, " ").slice(0, 60) || "alguien";
+    const dueno = P.limpiarRespuesta(elegido.owner_name || "alguien del grupo").replace(/\s+/g, " ").slice(0, 60);
+    // Termina con la firma de siempre: así el bot la reconoce como suya.
+    const caption = `🎨 _${prompt.slice(0, 150)}_\n\n_— imagen · LLM de ${dueno} · pedida por ${pedidoPor}_`;
+    console.log(`🎨 [live] Imagen ${limpia.width}x${limpia.height} en ${groupId} con el LLM #${elegido.id}.`);
+    return { imagen: { data: limpia.data, caption } };
+  } catch (e) {
+    console.warn(`⚠️ [live] No salió la imagen en ${groupId} (LLM #${elegido.id}):`, e.message);
+    if (e.message === "timeout") return { texto: "⌛ La imagen tardó demasiado. Probá de nuevo en un rato." };
+    if (e.message === "desconectado") return { texto: "🔌 El LLM se desconectó mientras dibujaba." };
+    if (e.message.startsWith("imagen rechazada")) return { texto: "🛡️ La imagen que llegó no pasó los controles de seguridad, así que no la publico." };
+    return { texto: "⚠️ No pude dibujar esta vez. Probá de nuevo en un rato." };
+  } finally {
+    gruposDibujando.delete(groupId);
+  }
+}
+
+// /mbot image delete, respondiendo a una imagen del bot: la borra para todos.
+async function borrarImagen(message) {
+  if (!message.hasQuotedMsg) {
+    return { texto: "💡 Respondé (reply) a la imagen que querés borrar con `/mbot image delete`." };
+  }
+  let citado = null;
+  try { citado = await message.getQuotedMessage(); } catch (e) { /* abajo */ }
+  const esNuestra = citado && citado.fromMe && citado.type === "image" && esRespuestaLLM(citado.body);
+  if (!esNuestra) return { texto: "❌ Solo puedo borrar imágenes que dibujé yo." };
+  try {
+    await citado.delete(true);
+    return null;
+  } catch (e) {
+    return { texto: "⚠️ No pude borrarla (WhatsApp solo deja borrar para todos durante un tiempo)." };
+  }
+}
+
 module.exports = {
+  esPedidoDeImagen,
+  comandoImagen,
   // Para tests
   _memoria: { recuerdos, recordar, olvidar, MEMORIA },
   esRespuestaLLM,

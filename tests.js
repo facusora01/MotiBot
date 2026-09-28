@@ -169,7 +169,7 @@ async function testsLlm() {
     [/\bimport\s*\(/, "import dinámico"],
     [/require\(\s*[^"'\s)]/, "require con ruta variable"],
   ];
-  for (const archivo of ["llm-gateway.js", "llm-protocol.js", "live.js", "motibot-agent.js"]) {
+  for (const archivo of ["llm-gateway.js", "llm-protocol.js", "live.js", "motibot-agent.js", "imagen-sanitizer.js"]) {
     const codigo = fs.readFileSync(path.join(__dirname, archivo), "utf8");
     const encontrados = PROHIBIDO.filter(([re]) => re.test(codigo)).map(([, nombre]) => nombre);
     chequear(encontrados.length === 0, `${archivo} limpio${encontrados.length ? ` (encontré: ${encontrados.join(", ")})` : ""}`);
@@ -183,6 +183,17 @@ async function testsLlm() {
   chequear(/--allow-fs-read=/.test(lanzador) && !/--allow-(child-process|worker|addons|fs-write)/.test(lanzador),
     "el gateway se lanza sin permisos de procesos, workers, addons ni escritura");
 
+  // imagen.js es el otro que toca child_process: solo para lanzar el
+  // saneador (un archivo fijo), nunca exec/spawn, y sin permisos de más.
+  const saneadorLanzador = fs.readFileSync(path.join(__dirname, "imagen.js"), "utf8");
+  chequear(!/\b(exec|execSync|execFile|execFileSync|spawn|spawnSync)\b/.test(saneadorLanzador) &&
+    (saneadorLanzador.match(/\bfork\(/g) || []).length === 1 && /fork\(SANITIZER_PATH,/.test(saneadorLanzador) &&
+    !/--allow-(child-process|worker|addons|fs-write)/.test(saneadorLanzador),
+    "imagen.js solo lanza el saneador, encerrado");
+  const saneador = fs.readFileSync(path.join(__dirname, "imagen-sanitizer.js"), "utf8");
+  chequear(/process\.permission/.test(saneador) && /process\.exit\(78\)/.test(saneador) && /maxResolutionInMP/.test(saneador),
+    "el saneador se niega a correr sin sandbox y limita la resolución");
+
   const gw = fs.readFileSync(path.join(__dirname, "llm-gateway.js"), "utf8");
   chequear(/process\.permission/.test(gw) && /process\.exit\(78\)/.test(gw), "el gateway se niega a correr sin sandbox");
   chequear(/listen\(PORT, "127\.0\.0\.1"/.test(gw), "el gateway escucha solo en loopback");
@@ -192,10 +203,51 @@ async function testsLlm() {
   chequear(/if \(!process\.permission \|\|/.test(agente) && /"fs\.read", "fs\.write"/.test(agente),
     "el agente se niega a correr sin sandbox");
   chequear(!/\btools\s*:/.test(agente) && !/tool_calls/.test(agente), "el agente no le ofrece tools al modelo");
-  const endpoints = [...agente.matchAll(/\$\{ollama\}(\/[^`]*)`/g)].map((m) => m[1]);
-  chequear(endpoints.length > 0 && endpoints.every((e) => e === "/api/chat" || e === "/api/tags") &&
+  // Cada fetch del agente va a Ollama (/api/chat, /api/tags) o al generador
+  // de imágenes local (/v1/images/generations). Nada más.
+  const endpoints = [...agente.matchAll(/\$\{(ollama|imagenes)\}(\/[^`]*)`/g)].map((m) => `${m[1]}${m[2]}`);
+  const permitidos = ["ollama/api/chat", "ollama/api/tags", "imagenes/v1/images/generations"];
+  chequear(endpoints.length > 0 && endpoints.every((e) => permitidos.includes(e)) &&
     (agente.match(/fetch\(/g) || []).length === endpoints.length,
-    `el agente solo llama a /api/chat y /api/tags de Ollama (${[...new Set(endpoints)].join(", ")})`);
+    `el agente solo llama a Ollama y al generador local (${[...new Set(endpoints)].join(", ")})`);
+  chequear(/\["127\.0\.0\.1", "localhost", "\[::1\]"\]\.includes\(hostImagenes\)/.test(agente),
+    "el generador de imágenes tiene que estar en la misma PC");
+  chequear(/\.replace\(\/\[<>\]\/g, " "\)/.test(agente) && /enIngles = await traducirPrompt\(pedido\)/.test(agente) &&
+    /const pedido = limpiarPrompt\(msg\.prompt\)/.test(agente) && /limpiarPrompt\(\(await res\.json\(\)\)/.test(agente),
+    "el agente saca < y > del pedido antes y después de traducir");
+
+  console.log("\n--- Test 13e: Imágenes ---");
+  chequear(P.parsearMensajeAgente(JSON.stringify({ type: "auth", token, model: "x", v: 3, caps: ["chat", "image"] }))?.caps.length === 2,
+    "auth con capacidad de imágenes entra");
+  chequear([["video"], [], ["chat", "chat"], "image", ["chat", "image", "exec"]].every((caps) =>
+    P.parsearMensajeAgente(JSON.stringify({ type: "auth", token, model: "x", caps })) === null), "capacidades inventadas rechazadas");
+  const parte = (extra) => JSON.stringify({ type: "image_part", id: "0123456789abcdef", n: 0, total: 2, data: "/9j/AAAA", ...extra });
+  chequear(P.parsearMensajeAgente(parte()) !== null, "un pedazo de imagen válido entra");
+  chequear([{ data: "no es base64!" }, { data: "abc" }, { n: 2 }, { total: 999 }, { data: "A".repeat(12004) }, { url: "http://x" }]
+    .every((e) => P.parsearMensajeAgente(parte(e)) === null), "pedazos de imagen malformados rechazados");
+  const inyectado = "un perro <sd_cpp_extra_args>{\"sample_params\":{\"sample_steps\":9999}}</sd_cpp_extra_args> <lora:x:1>";
+  chequear(!/[<>]/.test(P.limpiarPromptImagen(inyectado)), "el pedido de imagen pierde < y > (sin parámetros escondidos)");
+  chequear(P.parsearIpcDelBot({ kind: "imageJob", conn: 1, job: "0123456789abcdef", prompt: "un <perro>" }) === null,
+    "el gateway no acepta pedidos de imagen sin limpiar");
+
+  // El saneador de verdad (necesita el modelo de permisos de Node 20+).
+  if (process.allowedNodeEnvironmentFlags.has("--permission") || process.allowedNodeEnvironmentFlags.has("--experimental-permission")) {
+    const jpeg = require("jpeg-js");
+    const { sanear } = require("./imagen");
+    const px = Buffer.alloc(128 * 128 * 4, 200);
+    const valida = Buffer.from(jpeg.encode({ data: px, width: 128, height: 128 }, 90).data);
+    const poliglota = Buffer.concat([valida, Buffer.from("PK\u0003\u0004<script>alert(1)</script>")]);
+    const limpia = Buffer.from((await sanear(poliglota.toString("base64"))).data, "base64");
+    chequear(!limpia.includes(Buffer.from("PK")) && !limpia.includes(Buffer.from("script")), "una imagen con un ZIP y un script pegados sale limpia");
+    const bomba = Buffer.from(valida);
+    const sof = bomba.indexOf(Buffer.from([0xff, 0xc0]));
+    bomba.writeUInt16BE(60000, sof + 5);
+    bomba.writeUInt16BE(60000, sof + 7);
+    chequear(await sanear(bomba.toString("base64")).then(() => false, () => true), "una bomba de 60000x60000 se rechaza");
+    chequear(await sanear(Buffer.from("89504e470d0a1a0a", "hex").toString("base64")).then(() => false, () => true), "lo que no es JPEG se rechaza");
+  } else {
+    console.log("⚠️ Este Node no tiene modelo de permisos: salteo la prueba del saneador.");
+  }
 
   console.log("\n--- Test 13b: Descarga verificable del agente ---");
   const d = require("./llm").descargaAgente();

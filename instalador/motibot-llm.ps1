@@ -65,6 +65,29 @@ if (-not $env:MOTIBOT_TOKEN) {
 $modelosDir = [Environment]::GetEnvironmentVariable("OLLAMA_MODELS", "User")
 if ($modelosDir) { $env:OLLAMA_MODELS = $modelosDir }
 
+# --- Imagenes (opcional) ------------------------------------------------------
+# Si el instalador bajo el generador de imagenes, imagenes.json dice donde esta.
+# Solo se usan rutas DENTRO de esa carpeta.
+$Imagenes = $null
+$imgConfig = Join-Path $Carpeta "imagenes.json"
+if (Test-Path $imgConfig) {
+  try {
+    $cfg = Get-Content $imgConfig -Raw | ConvertFrom-Json
+    $dir = [IO.Path]::GetFullPath($cfg.dir)
+    $rutas = @{}
+    foreach ($k in "servidor", "diffusion", "vae", "llm") {
+      $r = [IO.Path]::GetFullPath((Join-Path $dir $cfg.$k))
+      if (-not $r.StartsWith($dir, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path $r)) { throw "falta $k" }
+      $rutas[$k] = $r
+    }
+    $Imagenes = @{ nombre = [string]$cfg.nombre; puerto = 17871; rutas = $rutas; dir = $dir }
+  } catch {
+    Write-Host "Aviso: la configuracion de imagenes esta incompleta ($($_.Exception.Message)). Sigo sin imagenes." -ForegroundColor Yellow
+  }
+}
+$ImagenesArchivo = Join-Path $Carpeta "ultimo-imagenes.txt"
+$usarImagenes = $Imagenes -and (Test-Path $ImagenesArchivo) -and ((Get-Content $ImagenesArchivo -Raw).Trim() -eq "si")
+
 # --- Ollama -------------------------------------------------------------------
 # Si no esta corriendo, se levanta DENTRO de esta ventana (sin ventana propia):
 # asi, al cerrarla, Windows lo apaga junto con todo lo demas.
@@ -101,11 +124,20 @@ if ($env:MOTIBOT_MODELO) {
       Write-Host ("  [{0}] {1,-28} {2,8}{3}" -f ($i + 1), $m.name, $gb, $marca)
     }
     Write-Host ""
+    if ($Imagenes) {
+      $estado = if ($usarImagenes) { "SI" } else { "NO" }
+      Write-Host ("  [I] generar imagenes con {0}: {1}" -f $Imagenes.nombre, $estado) -ForegroundColor $(if ($usarImagenes) { "Green" } else { "DarkGray" })
+    }
     Write-Host "  [T] cambiar el token" -ForegroundColor DarkGray
     Write-Host ""
     $eleccion = (Read-Host "  Numero (Enter = $($porDefecto + 1))").Trim()
 
     if ($eleccion -match '^[tT]$') { Pedir-Token | Out-Null; continue }
+    if ($Imagenes -and $eleccion -match '^[iI]$') {
+      $usarImagenes = -not $usarImagenes
+      Set-Content -Path $ImagenesArchivo -Value $(if ($usarImagenes) { "si" } else { "no" }) -Encoding ASCII
+      continue
+    }
     if (-not $eleccion) { $indice = $porDefecto; break }
     if ($eleccion -match '^\d+$' -and [int]$eleccion -ge 1 -and [int]$eleccion -le $modelos.Count) { $indice = [int]$eleccion - 1; break }
     Write-Host "  Opcion invalida." -ForegroundColor Red
@@ -113,6 +145,33 @@ if ($env:MOTIBOT_MODELO) {
   $modelo = $modelos[$indice].name
 }
 Set-Content -Path $UltimoArchivo -Value $modelo -Encoding ASCII
+
+# --- Generador de imagenes ----------------------------------------------------
+# Como Ollama: se levanta dentro de esta ventana, solo en 127.0.0.1, y se
+# apaga al cerrarla.
+$sdServer = $null
+$argsImagenes = @()
+if ($Imagenes -and $usarImagenes) {
+  Write-Host "Iniciando el generador de imagenes ($($Imagenes.nombre))..." -ForegroundColor DarkGray
+  $r = $Imagenes.rutas
+  $sdLog = Join-Path $Carpeta "imagenes.log"
+  $sdServer = Start-Process -FilePath $r.servidor -NoNewWindow -PassThru `
+    -WorkingDirectory $Imagenes.dir -RedirectStandardOutput $sdLog -RedirectStandardError "$sdLog.err" `
+    -ArgumentList @("--diffusion-model", "`"$($r.diffusion)`"", "--vae", "`"$($r.vae)`"", "--llm", "`"$($r.llm)`"",
+                    "--diffusion-fa", "--offload-to-cpu", "--cfg-scale", "1.0",
+                    "--listen-ip", "127.0.0.1", "--listen-port", "$($Imagenes.puerto)")
+  $urlImagenes = "http://127.0.0.1:$($Imagenes.puerto)"
+  $listo = $false
+  for ($i = 0; $i -lt 180 -and -not $sdServer.HasExited; $i++) {
+    try { Invoke-RestMethod "$urlImagenes/v1/models" -TimeoutSec 2 | Out-Null; $listo = $true; break } catch { Start-Sleep -Milliseconds 500 }
+  }
+  if ($listo) {
+    $argsImagenes = @("--imagenes", $urlImagenes)
+    Write-Host "Generador de imagenes listo." -ForegroundColor DarkGray
+  } else {
+    Write-Host "El generador de imagenes no arranco (mira $sdLog.err). Sigo solo con chat." -ForegroundColor Yellow
+  }
+}
 
 # --- Agente -------------------------------------------------------------------
 try {
@@ -125,7 +184,7 @@ try {
 
     # --permission: Node encierra al agente (sin acceso a archivos ni a
     # programas). Sin ese encierro, el agente se niega a arrancar.
-    & node --permission motibot-agent.js --server $Servidor --model $modelo
+    & node --permission motibot-agent.js --server $Servidor --model $modelo @argsImagenes
 
     # Salio con error (token rechazado, sesion reemplazada...): se puede
     # cargar un token nuevo y reintentar sin cerrar la ventana.
@@ -143,6 +202,9 @@ finally {
   # el modelo cargado). Uno que ya estaba abierto antes no se toca.
   if ($ollamaPropio -and -not $ollamaPropio.HasExited) {
     & taskkill.exe /PID $ollamaPropio.Id /T /F 2>&1 | Out-Null
+  }
+  if ($sdServer -and -not $sdServer.HasExited) {
+    & taskkill.exe /PID $sdServer.Id /T /F 2>&1 | Out-Null
   }
 }
 

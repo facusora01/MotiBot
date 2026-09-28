@@ -113,7 +113,8 @@ wss.on("connection", (ws) => {
   }
 
   const conn = siguienteConn++;
-  const c = { ws, estado: "nuevo", jobs: new Set(), vivo: true, timer: null };
+  // jobs: id -> "chat" | "image". partes: id -> pedazos de la imagen en curso.
+  const c = { ws, estado: "nuevo", jobs: new Map(), partes: new Map(), vivo: true, timer: null };
   conexiones.set(conn, c);
 
   c.timer = setTimeout(() => {
@@ -132,14 +133,38 @@ wss.on("connection", (ws) => {
       if (!authPermitido()) return cerrar(conn, CIERRE.lleno, "demasiados intentos");
       c.estado = "validando";
       // El token no sale de acá: al bot le llega solo su hash.
-      return aviso({ kind: "auth", conn, hash: P.hashToken(msg.token), model: msg.model, v: msg.v });
+      return aviso({ kind: "auth", conn, hash: P.hashToken(msg.token), model: msg.model, v: msg.v, caps: msg.caps });
     }
 
-    if (c.estado === "ok" && msg.type === "reply" && c.jobs.has(msg.id)) {
+    const tipo = c.estado === "ok" ? c.jobs.get(msg.id) : undefined;
+
+    // Un error vale para cualquier job; un texto, solo para un job de chat.
+    if (tipo && msg.type === "reply" && (msg.error || tipo === "chat")) {
       c.jobs.delete(msg.id);
+      c.partes.delete(msg.id);
       return aviso(msg.error
         ? { kind: "reply", conn, job: msg.id, error: true }
         : { kind: "reply", conn, job: msg.id, text: msg.text });
+    }
+
+    // Los pedazos de una imagen: solo para un job de imagen que pedimos, en
+    // orden (0, 1, 2...) y con el mismo total en todos.
+    if (tipo === "image" && msg.type === "image_part") {
+      const armado = c.partes.get(msg.id) || { total: msg.total, piezas: [], largo: 0 };
+      if (msg.total !== armado.total || msg.n !== armado.piezas.length) {
+        return cerrar(conn, CIERRE.invalido, "imagen fuera de orden");
+      }
+      armado.piezas.push(msg.data);
+      armado.largo += msg.data.length;
+      if (armado.largo > P.LIMITES.imagenBase64) return cerrar(conn, CIERRE.invalido, "imagen demasiado grande");
+      c.partes.set(msg.id, armado);
+
+      if (armado.piezas.length === armado.total) {
+        c.jobs.delete(msg.id);
+        c.partes.delete(msg.id);
+        aviso({ kind: "image", conn, job: msg.id, data: armado.piezas.join("") });
+      }
+      return;
     }
 
     // Cualquier otra combinación (auth repetido, reply a un job que no
@@ -187,16 +212,19 @@ process.on("message", (raw) => {
     return;
   }
 
-  if (msg.kind === "job") {
+  if (msg.kind === "job" || msg.kind === "imageJob") {
     if (c.estado !== "ok" || c.jobs.size >= MAX_JOBS_POR_AGENTE) {
       return aviso({ kind: "reply", conn: msg.conn, job: msg.job, error: true });
     }
-    c.jobs.add(msg.job);
-    // El bot abandona el job a los 120s; acá se libera un poco después para
-    // que un agente que nunca contesta no quede bloqueado para siempre.
-    setTimeout(() => c.jobs.delete(msg.job), 130 * 1000).unref();
+    const esImagen = msg.kind === "imageJob";
+    c.jobs.set(msg.job, esImagen ? "image" : "chat");
+    // El bot abandona el job (120s el chat, 240s la imagen); acá se libera un
+    // poco después para que un agente que nunca contesta no quede bloqueado.
+    setTimeout(() => { c.jobs.delete(msg.job); c.partes.delete(msg.job); }, (esImagen ? 250 : 130) * 1000).unref();
     try {
-      c.ws.send(JSON.stringify({ type: "job", id: msg.job, messages: msg.messages }));
+      c.ws.send(JSON.stringify(esImagen
+        ? { type: "image", id: msg.job, prompt: msg.prompt }
+        : { type: "job", id: msg.job, messages: msg.messages }));
     } catch (e) {
       c.jobs.delete(msg.job);
       aviso({ kind: "reply", conn: msg.conn, job: msg.job, error: true });

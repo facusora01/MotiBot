@@ -1,5 +1,5 @@
 require("dotenv").config();
-const { Client, LocalAuth } = require("whatsapp-web.js");
+const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const qrcode = require("qrcode-terminal");
 const cron = require("node-cron");
 const fs = require("fs");
@@ -820,6 +820,27 @@ async function responderLive(message, pedido) {
   }
 }
 
+// /mbot image: igual que el modo live, se atiende sin el timeout de los
+// comandos (traducir y dibujar tarda más, y no es señal de página colgada).
+// Solo el envío final lleva timeout.
+async function atenderImagen(message) {
+  const msgId = message.id?._serialized || message.id?.id;
+  if (yaProcesado(msgId)) return;
+
+  try {
+    const r = await live.comandoImagen(message, client);
+    if (!r) return;
+    if (r.imagen) {
+      const media = new MessageMedia("image/jpeg", r.imagen.data, "motibot.jpg");
+      await conTimeout(message.reply(media, undefined, { caption: r.imagen.caption }), 60000, "imagen");
+    } else if (r.texto) {
+      await conTimeout(message.reply(r.texto), REPLY_TIMEOUT, "respuesta de imagen");
+    }
+  } catch (error) {
+    console.error("❌ Error atendiendo /mbot image:", error.message);
+  }
+}
+
 async function processMessage(message) {
   if (message.timestamp && message.timestamp < ARRANQUE_TS) return;
 
@@ -842,6 +863,8 @@ async function processMessage(message) {
   // Los comandos oficiales son en inglés (/mbot market): por dentro se
   // traducen a los nombres históricos, que también siguen andando.
   if (message.body) message.body = traducirComando(message.body);
+
+  if (live.esPedidoDeImagen(message)) return atenderImagen(message);
 
   const body = message.body?.trim() || "";
 

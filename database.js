@@ -222,6 +222,9 @@ function agregarColumna(tabla, columna, definicion) {
 agregarColumna("group_settings", "carry_storage", "REAL");
 agregarColumna("group_settings", "carry_rate", "REAL");
 agregarColumna("group_settings", "carry_storage_unit", "TEXT DEFAULT 'usd'");
+// Generación de imágenes con los LLMs de la comunidad: apagada hasta que un
+// admin la prenda con /mbot image on.
+agregarColumna("group_settings", "images_enabled", "INTEGER DEFAULT 0");
 
 try {
   db.exec(`ALTER TABLE groups ADD COLUMN web_token TEXT`);
@@ -834,6 +837,16 @@ function setMarketTime(groupId, time) {
   db.prepare(`UPDATE group_settings SET market_time = ? WHERE group_id = ?`).run(time, groupId);
 }
 
+function isImagesEnabled(groupId) {
+  const row = db.prepare(`SELECT images_enabled FROM group_settings WHERE group_id = ?`).get(groupId);
+  return !!row?.images_enabled;
+}
+
+function setImagesEnabled(groupId, enabled) {
+  db.prepare(`INSERT OR IGNORE INTO group_settings (group_id) VALUES (?)`).run(groupId);
+  db.prepare(`UPDATE group_settings SET images_enabled = ? WHERE group_id = ?`).run(enabled ? 1 : 0, groupId);
+}
+
 function isMarketEnabled(groupId) {
   const row = db.prepare(`SELECT market_enabled FROM group_settings WHERE group_id = ?`).get(groupId);
   return !!row?.market_enabled;
@@ -934,6 +947,8 @@ function borrarGroupLive(groupId) {
 }
 
 module.exports = {
+  isImagesEnabled,
+  setImagesEnabled,
   esNombreDeRelleno,
   renombrarGrupo,
   guardarLlmAgent,

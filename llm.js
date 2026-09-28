@@ -81,7 +81,7 @@ function enviarAlGateway(msg) {
 let rechazosSinLoguear = 0;
 let ultimoLogRechazo = 0;
 
-function manejarAuth({ conn, hash, model, v }) {
+function manejarAuth({ conn, hash, model, v, caps }) {
   const agente = db.getLlmAgentPorHash(hash);
   if (!agente) {
     rechazosSinLoguear++;
@@ -100,10 +100,10 @@ function manejarAuth({ conn, hash, model, v }) {
     olvidarConexion(anterior);
   }
 
-  conexiones.set(conn, { llmId: agente.id, model, version: v, jobActual: null });
+  conexiones.set(conn, { llmId: agente.id, model, version: v, caps, jobActual: null });
   porLlm.set(agente.id, conn);
   enviarAlGateway({ kind: "authResult", conn, ok: true });
-  console.log(`🧠 [llm] Conectado el LLM de ${agente.owner_name || agente.owner_phone} (${model}, agente v${v}).`);
+  console.log(`🧠 [llm] Conectado el LLM de ${agente.owner_name || agente.owner_phone} (${model}, agente v${v}${caps.includes("image") ? ", con imágenes" : ""}).`);
 }
 
 function manejarReply({ conn, job, text, error }) {
@@ -117,7 +117,22 @@ function manejarReply({ conn, job, text, error }) {
   if (c && c.jobActual === job) c.jobActual = null;
 
   if (error) return j.reject(new Error("el agente no pudo responder"));
+  // Un texto como respuesta a un pedido de imagen no sirve.
+  if (j.tipo !== "chat") return j.reject(new Error("respuesta inválida"));
   j.resolve(P.limpiarRespuesta(text));
+}
+
+// La imagen armada por el gateway. Todavía no se usa tal cual: imagen.js la
+// re-codifica en un proceso encerrado antes de que llegue a WhatsApp.
+function manejarImagen({ conn, job, data }) {
+  const j = jobs.get(job);
+  if (!j || j.conn !== conn || j.tipo !== "image") return;
+
+  clearTimeout(j.timer);
+  jobs.delete(job);
+  const c = conexiones.get(conn);
+  if (c && c.jobActual === job) c.jobActual = null;
+  j.resolve(data);
 }
 
 function iniciarGateway() {
@@ -150,7 +165,7 @@ function iniciarGateway() {
       `--allow-fs-read=${GATEWAY_PATH}`,
       `--allow-fs-read=${PROTOCOLO_PATH}`,
       `--allow-fs-read=${WS_DIR}`,
-      "--max-old-space-size=64",
+      "--max-old-space-size=128", // entran las imágenes en armado
     ],
     // Env mínimo a propósito: el gateway no ve SMTP_PASS, PAIR_TOKEN ni nada
     // del .env.
@@ -178,6 +193,8 @@ function iniciarGateway() {
       olvidarConexion(msg.conn);
     } else if (msg.kind === "reply") {
       manejarReply(msg);
+    } else if (msg.kind === "image") {
+      manejarImagen(msg);
     }
   });
 
@@ -241,7 +258,7 @@ function conectados() {
   for (const [llmId, conn] of porLlm) {
     const agente = db.getLlmAgent(llmId);
     const c = conexiones.get(conn);
-    if (agente && c) lista.push({ ...agente, model: c.model, version: c.version });
+    if (agente && c) lista.push({ ...agente, model: c.model, version: c.version, caps: c.caps });
   }
   return lista;
 }
@@ -251,7 +268,7 @@ function infoConectado(llmId) {
   const c = conn && conexiones.get(conn);
   if (!c) return null;
   const agente = db.getLlmAgent(llmId);
-  return agente ? { ...agente, model: c.model, version: c.version } : null;
+  return agente ? { ...agente, model: c.model, version: c.version, caps: c.caps } : null;
 }
 
 function ocupado(llmId) {
@@ -259,33 +276,50 @@ function ocupado(llmId) {
   return Boolean(c?.jobActual);
 }
 
-// Manda una conversación al LLM y devuelve su respuesta ya limpia. Un job por
-// LLM a la vez: una PC de escritorio no da para más, y así nadie la satura.
-function preguntar(llmId, mensajes) {
+// Un pedido al agente. Uno por LLM a la vez: una PC de escritorio no da para
+// más, y así nadie la satura.
+function encargar(llmId, tipo, armarPedido, timeout) {
   return new Promise((resolve, reject) => {
     const conn = porLlm.get(llmId);
     const c = conn && conexiones.get(conn);
     if (!c) return reject(new Error("desconectado"));
     if (c.jobActual) return reject(new Error("ocupado"));
-    if (!P.validarMensajesJob(mensajes)) return reject(new Error("mensajes inválidos"));
 
     const job = P.nuevoIdJob();
     const timer = setTimeout(() => {
       jobs.delete(job);
       if (c.jobActual === job) c.jobActual = null;
       reject(new Error("timeout"));
-    }, TIMEOUT_JOB);
+    }, timeout);
 
-    jobs.set(job, { conn, resolve, reject, timer });
+    jobs.set(job, { conn, tipo, resolve, reject, timer });
     c.jobActual = job;
 
-    if (!enviarAlGateway({ kind: "job", conn, job, messages: mensajes })) {
+    if (!enviarAlGateway(armarPedido(conn, job))) {
       clearTimeout(timer);
       jobs.delete(job);
       c.jobActual = null;
       reject(new Error("desconectado"));
     }
   });
+}
+
+// Manda una conversación al LLM y devuelve su respuesta ya limpia.
+function preguntar(llmId, mensajes) {
+  if (!P.validarMensajesJob(mensajes)) return Promise.reject(new Error("mensajes inválidos"));
+  return encargar(llmId, "chat", (conn, job) => ({ kind: "job", conn, job, messages: mensajes }), TIMEOUT_JOB);
+}
+
+// Le pide una imagen al LLM (tiene que haberse anunciado con "image").
+// Devuelve el JPEG en base64 tal como lo mandó el agente: SIN sanear todavía.
+const TIMEOUT_IMAGEN = 240 * 1000; // traducir + dibujar, con margen para PCs lentas
+function pedirImagen(llmId, prompt) {
+  const info = infoConectado(llmId);
+  if (!info) return Promise.reject(new Error("desconectado"));
+  if (!info.caps?.includes("image")) return Promise.reject(new Error("sin imágenes"));
+  const limpio = P.limpiarPromptImagen(prompt);
+  if (!limpio) return Promise.reject(new Error("pedido vacío"));
+  return encargar(llmId, "image", (conn, job) => ({ kind: "imageJob", conn, job, prompt: limpio }), TIMEOUT_IMAGEN);
 }
 
 // Corta la sesión de un LLM (cuando su dueño lo da de baja o rota el token).
@@ -307,5 +341,6 @@ module.exports = {
   infoConectado,
   ocupado,
   preguntar,
+  pedirImagen,
   expulsar,
 };

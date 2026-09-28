@@ -24,6 +24,8 @@
 //   --server        URL del gateway (por defecto, la que viene abajo)
 //   --ollama        URL de Ollama (por defecto http://127.0.0.1:11434; solo local)
 //   --por-minuto    Máximo de preguntas por minuto (1 a 60, por defecto 10)
+//   --imagenes      URL de un generador de imágenes local (stable-diffusion.cpp,
+//                   ej: http://127.0.0.1:1234). Sin esto, solo chatea.
 //
 // Necesita Node 22 o más nuevo (trae WebSocket y fetch de fábrica). En Node
 // 22 anterior a 22.13 el flag se llama --experimental-permission.
@@ -45,8 +47,8 @@ if (!process.permission || ["child", "worker", "fs.read", "fs.write"].some(tiene
 const SERVIDOR_POR_DEFECTO = "__MOTIBOT_SERVER__";
 
 // Versión del agente. La 2 recibe la memoria de la charla (varias idas y
-// vueltas por pregunta).
-const VERSION = 2;
+// vueltas por pregunta); la 3 puede además dibujar imágenes (--imagenes).
+const VERSION = 3;
 
 const LIMITES = {
   mensajesPorJob: 24,
@@ -64,7 +66,7 @@ const ROLES = ["system", "user", "assistant"];
 function leerArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i++) {
-    const m = argv[i].match(/^--(token|model|server|ollama|por-minuto)$/);
+    const m = argv[i].match(/^--(token|model|server|ollama|por-minuto|imagenes)$/);
     if (m && argv[i + 1] !== undefined) args[m[1]] = argv[++i];
   }
   return args;
@@ -96,6 +98,15 @@ if (!RE_SERVIDOR.test(servidor)) salir("La URL del servidor tiene que ser wss://
 let hostOllama;
 try { hostOllama = new URL(ollama).hostname; } catch (e) { salir("La URL de Ollama no es válida."); }
 if (!["127.0.0.1", "localhost", "[::1]"].includes(hostOllama)) salir("Ollama tiene que correr en esta PC (127.0.0.1).");
+
+// Generación de imágenes (opcional): la URL de un stable-diffusion.cpp
+// (sd-server) corriendo en esta misma PC. Sin esto, el agente solo chatea.
+const imagenes = args.imagenes ? args.imagenes.replace(/\/+$/, "") : "";
+if (imagenes) {
+  let hostImagenes;
+  try { hostImagenes = new URL(imagenes).hostname; } catch (e) { salir("La URL de --imagenes no es válida."); }
+  if (!["127.0.0.1", "localhost", "[::1]"].includes(hostImagenes)) salir("El generador de imágenes tiene que correr en esta PC (127.0.0.1).");
+}
 
 // ─── OLLAMA ──────────────────────────────────────────────────────────────────
 // Los modelos que "piensan" antes de contestar (qwen3, deepseek-r1...) se
@@ -151,6 +162,91 @@ async function chequearOllama() {
     else console.log(`✅ Ollama listo con ${modelo}.`);
   } catch (e) {
     console.warn(`⚠️ No pude hablar con Ollama en ${ollama}. ¿Está corriendo? (${e.message})`);
+  }
+}
+
+// ─── IMÁGENES ────────────────────────────────────────────────────────────────
+// El pedido llega en el idioma de quien lo escribió; el generador entiende
+// bien inglés. Tu modelo de texto lo traduce y después se dibuja.
+//
+// Seguridad: el generador acepta parámetros escondidos dentro del texto
+// (<sd_cpp_extra_args>{...}</...>). Por eso el pedido pierde cualquier "<" o
+// ">" ANTES y DESPUÉS de traducir (la traducción los podría reintroducir), y
+// tamaño, pasos y formato los fija este archivo, nunca el pedido.
+const IMAGEN = {
+  tamano: "768x768",
+  pasos: 8,
+  calidad: 85,
+  maxPrompt: 300,
+  maxBase64: 800 * 1024,
+  parte: 12000, // múltiplo de 4: cada pedazo es base64 válido por sí solo
+};
+const TIMEOUT_TRADUCCION = 60 * 1000;
+const TIMEOUT_DIBUJO = 170 * 1000;
+
+function limpiarPrompt(texto) {
+  return String(texto || "")
+    .replace(/[\u0000-\u001F\u007F-\u009F‪-‮⁦-⁩]/g, " ")
+    .replace(/[<>]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, IMAGEN.maxPrompt)
+    .trim();
+}
+
+async function traducirPrompt(pedido) {
+  try {
+    const res = await fetch(`${ollama}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: modelo,
+        stream: false,
+        keep_alive: -1,
+        ...(modeloSinThink ? {} : { think: false }),
+        options: { num_predict: 160, num_ctx: 2048 },
+        messages: [
+          { role: "system", content: "Rewrite the user's request as a short English prompt for an image generator. Keep every detail they asked for. Reply with the prompt only, no quotes, no explanations." },
+          { role: "user", content: pedido },
+        ],
+      }),
+      signal: AbortSignal.timeout(TIMEOUT_TRADUCCION),
+    });
+    if (!res.ok) throw new Error(`Ollama respondió ${res.status}`);
+    const texto = limpiarPrompt((await res.json())?.message?.content?.replace(/<think>[\s\S]*?<\/think>/g, ""));
+    return texto || pedido;
+  } catch (e) {
+    console.warn(`⚠️ No pude traducir el pedido (${e.message}); dibujo con el original.`);
+    return pedido;
+  }
+}
+
+async function dibujar(prompt) {
+  const extra = JSON.stringify({ sample_params: { sample_steps: IMAGEN.pasos, guidance: { txt_cfg: 1.0 } } });
+  const res = await fetch(`${imagenes}/v1/images/generations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      // Los parámetros los pone este archivo: el pedido ya no tiene "<" ni ">".
+      prompt: `${prompt} <sd_cpp_extra_args>${extra}</sd_cpp_extra_args>`,
+      n: 1,
+      size: IMAGEN.tamano,
+      output_format: "jpeg",
+      output_compression: IMAGEN.calidad,
+    }),
+    signal: AbortSignal.timeout(TIMEOUT_DIBUJO),
+  });
+  if (!res.ok) throw new Error(`el generador respondió ${res.status}`);
+  const b64 = (await res.json())?.data?.[0]?.b64_json;
+  if (typeof b64 !== "string" || !b64.startsWith("/9j/")) throw new Error("el generador no devolvió un JPEG");
+  if (b64.length > IMAGEN.maxBase64) throw new Error("la imagen es demasiado grande");
+  return b64;
+}
+
+function enviarImagen(ws, id, b64) {
+  const total = Math.ceil(b64.length / IMAGEN.parte);
+  for (let n = 0; n < total; n++) {
+    ws.send(JSON.stringify({ type: "image_part", id, n, total, data: b64.slice(n * IMAGEN.parte, (n + 1) * IMAGEN.parte) }));
   }
 }
 
@@ -231,6 +327,14 @@ function parsearDelServidor(raw) {
     if (!ok) return null;
     return { type: "job", id: msg.id, messages: msg.messages.map((m) => ({ role: m.role, content: m.content })) };
   }
+
+  // Pedido de imagen: solo si este agente dibuja.
+  if (msg.type === "image" && imagenes) {
+    if (Object.keys(msg).some((k) => !["type", "id", "prompt"].includes(k))) return null;
+    if (typeof msg.id !== "string" || !/^[a-f0-9]{16}$/.test(msg.id)) return null;
+    if (typeof msg.prompt !== "string" || !msg.prompt || msg.prompt.length > IMAGEN.maxPrompt) return null;
+    return { type: "image", id: msg.id, prompt: msg.prompt };
+  }
   return null;
 }
 
@@ -253,7 +357,7 @@ function conectar() {
   const ws = new WebSocket(servidor);
 
   ws.addEventListener("open", () => {
-    ws.send(JSON.stringify({ type: "auth", token, model: modelo, v: VERSION }));
+    ws.send(JSON.stringify({ type: "auth", token, model: modelo, v: VERSION, caps: imagenes ? ["chat", "image"] : ["chat"] }));
   });
 
   ws.addEventListener("message", async (evento) => {
@@ -263,7 +367,8 @@ function conectar() {
 
     if (msg.type === "ready") {
       espera = 2000;
-      console.log(`🟢 Conectado a MotiBot. Tu LLM (${modelo}) ya está disponible para /mbot live.`);
+      console.log(`🟢 Conectado a MotiBot. Tu LLM (${modelo}) ya está disponible para /mbot live` +
+        (imagenes ? " y para /mbot image." : "."));
       return;
     }
 
@@ -275,6 +380,23 @@ function conectar() {
     }
     ocupado = true;
     const inicio = Date.now();
+
+    if (msg.type === "image") {
+      try {
+        const pedido = limpiarPrompt(msg.prompt);
+        const enIngles = await traducirPrompt(pedido);
+        const b64 = await dibujar(enIngles);
+        enviarImagen(ws, msg.id, b64);
+        console.log(`🎨 Dibujé una imagen en ${((Date.now() - inicio) / 1000).toFixed(1)}s.`);
+      } catch (e) {
+        console.warn(`⚠️ No pude dibujar: ${e.message}`);
+        try { ws.send(JSON.stringify({ type: "reply", id: msg.id, error: true })); } catch (e2) { /* se cortó */ }
+      } finally {
+        ocupado = false;
+      }
+      return;
+    }
+
     try {
       const texto = await preguntarAOllama(msg.messages);
       ws.send(JSON.stringify({ type: "reply", id: msg.id, text: texto }));

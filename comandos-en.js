@@ -13,6 +13,8 @@ const MBOT = {
   alert: "alerta",
   alerts: "alertas",
   phrases: "frases",
+  // Al revés: /mbot image ya es el nombre interno; el español es el alias.
+  imagen: "image",
 };
 
 // /admin <sub>

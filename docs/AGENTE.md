@@ -103,6 +103,35 @@ correcta junto con las instrucciones. Calculá la del archivo que bajaste:
 
 Si coincide con la que te mandó MotiBot, es exactamente el original.
 
+## Imágenes (opcional)
+
+Si en el instalador elegís sumar la generación de imágenes, se instala
+[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) con
+el modelo Z-Image-Turbo (licencia libre, unos 7,5 GB). Cada archivo se
+compara contra su huella SHA-256 antes de usarlo. Se prende y se apaga
+desde el menú de **MotiBot LLM** con `[I]`.
+
+Con eso prendido, cuando alguien pide `/mbot image <descripción>` en un
+grupo:
+
+1. Tu modelo de texto traduce el pedido al inglés (el generador entiende
+   mejor el inglés).
+2. El generador, corriendo en tu PC en `127.0.0.1`, dibuja una imagen de
+   768×768.
+3. El agente le manda la imagen a MotiBot, que antes de publicarla la
+   rehace desde cero (ver abajo).
+
+Lo que no cambia: el agente sigue encerrado, no lee ni escribe archivos, y
+solo habla con Ollama, con el generador de tu PC y con MotiBot. El pedido
+pierde cualquier `<` o `>` antes de llegar al generador, así nadie puede
+esconder parámetros adentro del texto (por ejemplo, pedir miles de pasos
+para trabar tu PC). El tamaño y los pasos los fija el agente, nunca el
+pedido.
+
+Del lado de MotiBot, la imagen nunca se publica tal cual llega: un proceso
+encerrado la decodifica y arma una nueva desde los píxeles. Lo que sale son
+solo colores, sin metadatos ni nada escondido.
+
 ## Qué ven los demás
 
 - **Vos** ves en tu PC los mensajes que le escriben al bot en los grupos

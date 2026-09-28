@@ -16,12 +16,22 @@ const LIMITES = {
   contenidoPorMensaje: 2000,
   contenidoPorJob: 12000,   // suma de todos los mensajes de un job
   codigoAgente: 200 * 1024,
+  // Imágenes: el agente las manda en pedazos chicos para que el tope de cada
+  // mensaje WebSocket siga en 16 KB (nadie puede mandar un mensaje gigante).
+  promptImagen: 300,          // caracteres del pedido
+  imagenParte: 12000,         // caracteres base64 por pedazo (múltiplo de 4)
+  imagenPartes: 64,           // pedazos como máximo
+  imagenBase64: 800 * 1024,   // caracteres base64 de la imagen entera (~600 KB)
 };
 
 // Versión del agente a partir de la cual recibe la memoria de la charla. Los
 // agentes viejos no mandan versión (= 1) y aceptan como mucho 4 mensajes por
 // job: a esos se les sigue mandando solo la pregunta.
 const VERSION_MEMORIA = 2;
+
+// Capacidades que un agente puede anunciar. "image" = genera imágenes.
+const CAPACIDADES = ["chat", "image"];
+const RE_BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 
 const PREFIJO_TOKEN = "mbk_";
 const RE_TOKEN = /^mbk_[A-Za-z0-9_-]{43}$/;
@@ -58,11 +68,18 @@ function esConn(x) {
 }
 
 // ─── AGENTE → GATEWAY (WebSocket) ────────────────────────────────────────────
-// Dos tipos y ninguno más:
-//   { type: "auth",  token, model, v? }   (v = versión del agente, 1 si falta)
+// Tres tipos y ninguno más:
+//   { type: "auth",  token, model, v?, caps? }  (v = versión, 1 si falta;
+//                                                caps = ["chat"] si falta)
 //   { type: "reply", id, text }   |   { type: "reply", id, error: true }
+//   { type: "image_part", id, n, total, data }  (un pedazo de JPEG en base64)
 function esVersion(v) {
   return Number.isInteger(v) && v >= 1 && v <= 100;
+}
+
+function esCaps(caps) {
+  return Array.isArray(caps) && caps.length >= 1 && caps.length <= CAPACIDADES.length &&
+    caps.every((c) => CAPACIDADES.includes(c)) && new Set(caps).size === caps.length;
 }
 
 function parsearMensajeAgente(raw) {
@@ -73,11 +90,22 @@ function parsearMensajeAgente(raw) {
   if (!esObjetoPlano(msg)) return null;
 
   if (msg.type === "auth") {
-    if (!soloClaves(msg, ["type", "token", "model", "v"])) return null;
+    if (!soloClaves(msg, ["type", "token", "model", "v", "caps"])) return null;
     if (typeof msg.token !== "string" || msg.token.length > LIMITES.token || !RE_TOKEN.test(msg.token)) return null;
     if (typeof msg.model !== "string" || !RE_MODELO.test(msg.model)) return null;
     if (msg.v !== undefined && !esVersion(msg.v)) return null;
-    return { type: "auth", token: msg.token, model: msg.model, v: msg.v ?? 1 };
+    if (msg.caps !== undefined && !esCaps(msg.caps)) return null;
+    return { type: "auth", token: msg.token, model: msg.model, v: msg.v ?? 1, caps: msg.caps ?? ["chat"] };
+  }
+
+  if (msg.type === "image_part") {
+    if (!soloClaves(msg, ["type", "id", "n", "total", "data"])) return null;
+    if (typeof msg.id !== "string" || !RE_JOB.test(msg.id)) return null;
+    if (!Number.isInteger(msg.total) || msg.total < 1 || msg.total > LIMITES.imagenPartes) return null;
+    if (!Number.isInteger(msg.n) || msg.n < 0 || msg.n >= msg.total) return null;
+    if (typeof msg.data !== "string" || msg.data.length === 0 || msg.data.length > LIMITES.imagenParte) return null;
+    if (msg.data.length % 4 !== 0 || !RE_BASE64.test(msg.data)) return null;
+    return { type: "image_part", id: msg.id, n: msg.n, total: msg.total, data: msg.data };
   }
 
   if (msg.type === "reply") {
@@ -114,11 +142,17 @@ function parsearIpcDelGateway(msg) {
       if (!soloClaves(msg, ["kind", "port"]) || !Number.isInteger(msg.port)) return null;
       return { kind: "listening", port: msg.port };
     case "auth":
-      if (!soloClaves(msg, ["kind", "conn", "hash", "model", "v"])) return null;
+      if (!soloClaves(msg, ["kind", "conn", "hash", "model", "v", "caps"])) return null;
       if (!esConn(msg.conn) || typeof msg.hash !== "string" || !RE_HASH.test(msg.hash)) return null;
       if (typeof msg.model !== "string" || !RE_MODELO.test(msg.model)) return null;
-      if (!esVersion(msg.v)) return null;
-      return { kind: "auth", conn: msg.conn, hash: msg.hash, model: msg.model, v: msg.v };
+      if (!esVersion(msg.v) || !esCaps(msg.caps)) return null;
+      return { kind: "auth", conn: msg.conn, hash: msg.hash, model: msg.model, v: msg.v, caps: msg.caps };
+    case "image":
+      if (!soloClaves(msg, ["kind", "conn", "job", "data"])) return null;
+      if (!esConn(msg.conn) || typeof msg.job !== "string" || !RE_JOB.test(msg.job)) return null;
+      if (typeof msg.data !== "string" || !msg.data.length || msg.data.length > LIMITES.imagenBase64) return null;
+      if (msg.data.length % 4 !== 0 || !RE_BASE64.test(msg.data)) return null;
+      return { kind: "image", conn: msg.conn, job: msg.job, data: msg.data };
     case "closed":
       if (!soloClaves(msg, ["kind", "conn"]) || !esConn(msg.conn)) return null;
       return { kind: "closed", conn: msg.conn };
@@ -149,6 +183,11 @@ function parsearIpcDelBot(msg) {
       if (!esConn(msg.conn) || typeof msg.job !== "string" || !RE_JOB.test(msg.job)) return null;
       if (!validarMensajesJob(msg.messages)) return null;
       return { kind: "job", conn: msg.conn, job: msg.job, messages: msg.messages };
+    case "imageJob":
+      if (!soloClaves(msg, ["kind", "conn", "job", "prompt"])) return null;
+      if (!esConn(msg.conn) || typeof msg.job !== "string" || !RE_JOB.test(msg.job)) return null;
+      if (typeof msg.prompt !== "string" || !msg.prompt || msg.prompt !== limpiarPromptImagen(msg.prompt)) return null;
+      return { kind: "imageJob", conn: msg.conn, job: msg.job, prompt: msg.prompt };
     case "kick":
       if (!soloClaves(msg, ["kind", "conn"]) || !esConn(msg.conn)) return null;
       return { kind: "kick", conn: msg.conn };
@@ -167,6 +206,20 @@ function limpiarRespuesta(texto) {
   t = t.replace(/\n{3,}/g, "\n\n").trim();
   if (t.length > LIMITES.respuesta) t = t.slice(0, LIMITES.respuesta).trimEnd() + "…";
   return t;
+}
+
+// El pedido de una imagen. Sin "<" ni ">": el programa de imágenes acepta
+// parámetros escondidos dentro del texto (<sd_cpp_extra_args>{...}</...>),
+// con los que alguien podría pedir miles de pasos o tamaños gigantes. Sin
+// esos signos no hay forma de escribirlos. Una sola línea y con tope.
+function limpiarPromptImagen(texto) {
+  return String(texto ?? "")
+    .replace(RE_INVISIBLES, " ")
+    .replace(/[<>]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, LIMITES.promptImagen)
+    .trim();
 }
 
 // Los modelos chicos imitan el "Nombre: mensaje" de un chat y arrancan con
@@ -201,6 +254,8 @@ function formatearRespuesta(texto, modelo, dueno) {
 module.exports = {
   LIMITES,
   VERSION_MEMORIA,
+  CAPACIDADES,
+  limpiarPromptImagen,
   generarToken,
   hashToken,
   nuevoIdJob,

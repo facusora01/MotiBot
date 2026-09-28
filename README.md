@@ -21,7 +21,9 @@ MotivationBot/
 ├── live.js              ← /mbot live y /mbot llm (LLMs de la comunidad)
 ├── llm.js               ← Lanza el gateway encerrado y le habla por IPC
 ├── llm-gateway.js       ← Proceso aislado que recibe a los agentes por WebSocket
-├── llm-protocol.js      ← Protocolo (solo texto) y limpieza de respuestas
+├── llm-protocol.js      ← Protocolo (texto e imágenes) y limpieza de respuestas
+├── imagen.js            ← Lanza el saneador de imágenes, uno por imagen
+├── imagen-sanitizer.js  ← Proceso aislado que rehace cada imagen desde los píxeles
 ├── motibot-agent.js     ← Agente que corre cada usuario al lado de su Ollama
 ├── instalador/          ← Instalador para Windows (acceso directo "MotiBot LLM")
 ├── docs/AGENTE.md       ← Qué hace el agente, explicado para quien lo instala
@@ -126,6 +128,15 @@ Vive en la memoria del proceso: se borra con `/mbot live off`, con
 `/mbot live reset` (admins), al cambiar de LLM o si el bot reinicia. Solo la
 reciben los agentes v2 en adelante; los viejos siguen andando sin memoria.
 
+**Imágenes:**
+- `/mbot image on|off` (admins): prende o apaga las imágenes en el grupo.
+- `/mbot image <descripción>`: cualquiera pide una imagen (una cada 2 minutos
+  por persona, 10 por día por persona y 30 por grupo). La dibuja el LLM de
+  alguien del grupo que tenga la generación de imágenes prendida (agente v3
+  con `--imagenes`): primero traduce el pedido al inglés con su modelo de
+  texto y después dibuja en 768×768.
+- `/mbot image delete` (admins, respondiendo a la imagen): la borra para todos.
+
 **Info:**
 - `/mbot status`, `/mbot time`, `/mbot help`
 
@@ -213,8 +224,18 @@ Funnel la ruta o no.
   escribir archivos, y no recibe las variables del `.env`. Si arranca sin
   sandbox, se niega a atender. Necesita Node 20 o más nuevo; si el Node no
   tiene permisos, el gateway no se levanta.
-- El protocolo acepta exactamente dos mensajes del agente (`auth` y `reply`,
-  con texto). Cualquier otra cosa corta la conexión.
+- El protocolo acepta exactamente tres mensajes del agente: `auth`, `reply`
+  (texto) e `image_part` (pedazos de un JPEG en base64, de hasta 12 KB, solo
+  para un pedido de imagen que hizo el bot, en orden). Cualquier otra cosa
+  corta la conexión, y ningún mensaje pasa de 16 KB.
+- Una imagen nunca se publica tal cual llega: `imagen-sanitizer.js`, en un
+  proceso aparte encerrado igual que el gateway, la decodifica con un
+  decodificador en JavaScript puro (sin código en C), con tope de resolución
+  y memoria, y arma un JPEG nuevo desde los píxeles: sin metadatos ni nada
+  pegado al archivo original.
+- El pedido de imagen pierde `<` y `>` (en el bot y en el agente, antes y
+  después de traducir): así nadie puede esconder parámetros para el
+  generador (`<sd_cpp_extra_args>`). Tamaño y pasos los fija el agente.
 - La respuesta del LLM solo termina en un reply al grupo, limpia de caracteres
   invisibles, recortada, sin poder empezar con `/` ni `@` y con la firma del
   modelo al final: nunca se lee como comando. Los mensajes propios del bot nunca van al LLM.
