@@ -513,7 +513,7 @@ async function comandoImagen(message, client) {
           : "⚪ Imágenes apagadas en este grupo.",
       };
     }
-    return borrarImagen(message);
+    return borrarImagen(message, client);
   }
 
   if (!db.isImagesEnabled(groupId)) {
@@ -594,8 +594,28 @@ const imagenesEnviadas = new Map(); // id del mensaje -> { mensaje, groupId, ts 
 
 function registrarImagenEnviada(enviado, groupId) {
   const id = enviado?.id?.id;
-  if (!id) return;
+  if (!id) return console.warn("⚠️ [live] La imagen se mandó pero no vino su id: no se podrá borrar con el comando.");
   imagenesEnviadas.set(id, { mensaje: enviado, groupId, ts: Date.now() });
+  console.log(`🎨 [live] Imagen registrada para borrar: ${id} en ${groupId}.`);
+}
+
+// Plan B (por ejemplo, después de un reinicio del bot): la busca en la
+// memoria de WhatsApp Web por su id, y sirve solo si la mandó el bot, es una
+// imagen de este grupo y tiene la firma del LLM.
+async function buscarImagenDelBot(client, stanzaId, groupId) {
+  try {
+    const serializado = await client.pupPage.evaluate((sid, gid) => {
+      const m = window.Store.Msg.getModelsArray().find((x) => x.id?.id === sid);
+      const chat = m?.id?.remote?._serialized || m?.id?.remote;
+      return m && m.id.fromMe && m.type === "image" && chat === gid ? m.id._serialized : null;
+    }, stanzaId, groupId);
+    if (!serializado) return null;
+    const mensaje = await client.getMessageById(serializado);
+    return mensaje && esRespuestaLLM(mensaje.body) ? mensaje : null;
+  } catch (e) {
+    console.warn("⚠️ [live] No pude buscar la imagen en WhatsApp Web:", e.message);
+    return null;
+  }
 }
 
 setInterval(() => {
@@ -604,17 +624,22 @@ setInterval(() => {
 }, 60 * 60 * 1000).unref();
 
 // /mbot image delete, respondiendo a una imagen del bot: la borra para todos.
-async function borrarImagen(message) {
+async function borrarImagen(message, client) {
   if (!message.hasQuotedMsg) {
     return { texto: "💡 Respondé (reply) a la imagen que querés borrar con `/mbot image delete`." };
   }
+  const groupId = chatDe(message);
   const idCitado = message._data?.quotedStanzaID;
   const registrada = idCitado && imagenesEnviadas.get(idCitado);
-  if (!registrada || registrada.groupId !== chatDe(message)) {
-    return { texto: "❌ Solo puedo borrar imágenes que dibujé yo en las últimas 48 horas." };
+  let mensaje = registrada && registrada.groupId === groupId ? registrada.mensaje : null;
+  if (!mensaje && idCitado) mensaje = await buscarImagenDelBot(client, idCitado, groupId);
+  console.log(`🎨 [live] Borrar imagen: citada=${idCitado || "(sin id)"} · en memoria=${Boolean(registrada)} · encontrada=${Boolean(mensaje)} · registradas=${imagenesEnviadas.size}`);
+
+  if (!mensaje) {
+    return { texto: "❌ Solo puedo borrar imágenes que dibujé yo." };
   }
   try {
-    await registrada.mensaje.delete(true);
+    await mensaje.delete(true);
     imagenesEnviadas.delete(idCitado);
     return null;
   } catch (e) {
