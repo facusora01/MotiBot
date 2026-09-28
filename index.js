@@ -832,7 +832,9 @@ async function atenderImagen(message) {
     if (!r) return;
     if (r.imagen) {
       const media = new MessageMedia("image/jpeg", r.imagen.data, "motibot.jpg");
-      await conTimeout(message.reply(media, undefined, { caption: r.imagen.caption }), 60000, "imagen");
+      const enviado = await conTimeout(message.reply(media, undefined, { caption: r.imagen.caption }), 60000, "imagen");
+      // Para poder borrarla después con /mbot image delete.
+      live.registrarImagenEnviada(enviado, message.fromMe ? message.to : message.from);
     } else if (r.texto) {
       await conTimeout(message.reply(r.texto), REPLY_TIMEOUT, "respuesta de imagen");
     }

@@ -584,19 +584,41 @@ async function comandoImagen(message, client) {
   }
 }
 
+// Las imágenes que mandó el bot, por el id del mensaje: así /mbot image
+// delete las encuentra sin leer el mensaje citado de la página (en los
+// grupos nuevos getQuotedMessage() revienta con "r"), y solo se puede borrar
+// lo que el bot sabe que mandó él. WhatsApp deja borrar para todos por un
+// tiempo limitado; se recuerdan 48 h.
+const RECUERDO_IMAGENES = 48 * 60 * 60 * 1000;
+const imagenesEnviadas = new Map(); // id del mensaje -> { mensaje, groupId, ts }
+
+function registrarImagenEnviada(enviado, groupId) {
+  const id = enviado?.id?.id;
+  if (!id) return;
+  imagenesEnviadas.set(id, { mensaje: enviado, groupId, ts: Date.now() });
+}
+
+setInterval(() => {
+  const limite = Date.now() - RECUERDO_IMAGENES;
+  for (const [id, r] of imagenesEnviadas) if (r.ts < limite) imagenesEnviadas.delete(id);
+}, 60 * 60 * 1000).unref();
+
 // /mbot image delete, respondiendo a una imagen del bot: la borra para todos.
 async function borrarImagen(message) {
   if (!message.hasQuotedMsg) {
     return { texto: "💡 Respondé (reply) a la imagen que querés borrar con `/mbot image delete`." };
   }
-  let citado = null;
-  try { citado = await message.getQuotedMessage(); } catch (e) { /* abajo */ }
-  const esNuestra = citado && citado.fromMe && citado.type === "image" && esRespuestaLLM(citado.body);
-  if (!esNuestra) return { texto: "❌ Solo puedo borrar imágenes que dibujé yo." };
+  const idCitado = message._data?.quotedStanzaID;
+  const registrada = idCitado && imagenesEnviadas.get(idCitado);
+  if (!registrada || registrada.groupId !== chatDe(message)) {
+    return { texto: "❌ Solo puedo borrar imágenes que dibujé yo en las últimas 48 horas." };
+  }
   try {
-    await citado.delete(true);
+    await registrada.mensaje.delete(true);
+    imagenesEnviadas.delete(idCitado);
     return null;
   } catch (e) {
+    console.warn("⚠️ [live] No pude borrar la imagen:", e.message);
     return { texto: "⚠️ No pude borrarla (WhatsApp solo deja borrar para todos durante un tiempo)." };
   }
 }
@@ -604,6 +626,7 @@ async function borrarImagen(message) {
 module.exports = {
   esPedidoDeImagen,
   comandoImagen,
+  registrarImagenEnviada,
   // Para tests
   _memoria: { recuerdos, recordar, olvidar, MEMORIA },
   esRespuestaLLM,
