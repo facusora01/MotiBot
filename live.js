@@ -644,6 +644,46 @@ setInterval(() => {
   for (const [id, r] of imagenesEnviadas) if (r.ts < limite) imagenesEnviadas.delete(id);
 }, 60 * 60 * 1000).unref();
 
+// Borra un mensaje propio para todos. Es lo mismo que Message.delete(true) de
+// whatsapp-web.js, pero sin Chat.find() (que en los grupos nuevos revienta
+// con "r": el chat se toma del Store, como con los participantes), probando
+// los dos formatos de la orden y contando en qué paso falló.
+async function borrarParaTodos(client, idSerializado, groupId) {
+  return client.pupPage.evaluate(async (msgId, gid) => {
+    const pasos = [];
+    try {
+      const msg = window.Store.Msg.get(msgId) || (await window.Store.Msg.getMessagesById([msgId]))?.messages?.[0];
+      if (!msg) return { ok: false, pasos: ["mensaje: no está"] };
+      pasos.push("mensaje ok");
+
+      const wid = window.Store.WidFactory.createWid(gid);
+      let chat = window.Store.Chat.get(msg.id.remote) || window.Store.Chat.get(wid);
+      if (!chat) {
+        try { chat = await window.Store.Chat.find(wid); } catch (e) { pasos.push(`chat.find: ${e?.message || e}`); }
+      }
+      if (!chat) return { ok: false, pasos: [...pasos, "chat: no está"] };
+      pasos.push("chat ok");
+
+      const intentos = [
+        () => window.Store.Cmd.sendRevokeMsgs(chat, { list: [msg], type: "message" }, { clearMedia: true }),
+        () => window.Store.Cmd.sendRevokeMsgs(chat, [msg], { clearMedia: true, type: "Sender" }),
+      ];
+      for (const [i, intento] of intentos.entries()) {
+        try {
+          await intento();
+          pasos.push(`borrado (formato ${i + 1})`);
+          return { ok: true, pasos };
+        } catch (e) {
+          pasos.push(`formato ${i + 1}: ${e?.message || e}`);
+        }
+      }
+      return { ok: false, pasos };
+    } catch (e) {
+      return { ok: false, pasos: [...pasos, `error: ${e?.message || e}`] };
+    }
+  }, idSerializado, groupId);
+}
+
 // /mbot image delete, respondiendo a una imagen del bot: la borra para todos.
 async function borrarImagen(message, client) {
   if (!message.hasQuotedMsg) {
@@ -663,13 +703,16 @@ async function borrarImagen(message, client) {
     return { texto: "❌ Solo puedo borrar imágenes que dibujé yo." };
   }
   try {
-    await mensaje.delete(true);
-    imagenesEnviadas.delete(idCitado);
-    return null;
+    const r = await borrarParaTodos(client, mensaje.id._serialized, groupId);
+    console.log(`🎨 [live] Borrado de ${idCitado}: ${r?.ok ? "ok" : "falló"} · ${(r?.pasos || []).join(" → ")}`);
+    if (r?.ok) {
+      imagenesEnviadas.delete(idCitado);
+      return null;
+    }
   } catch (e) {
     console.warn("⚠️ [live] No pude borrar la imagen:", e.message);
-    return { texto: "⚠️ No pude borrarla (WhatsApp solo deja borrar para todos durante un tiempo)." };
   }
+  return { texto: "⚠️ No pude borrarla. Si pasó mucho tiempo, WhatsApp ya no deja borrar para todos; si no, avisá al admin del bot." };
 }
 
 module.exports = {
