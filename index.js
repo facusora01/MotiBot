@@ -833,8 +833,10 @@ async function atenderImagen(message) {
     if (r.imagen) {
       const media = new MessageMedia("image/jpeg", r.imagen.data, "motibot.jpg");
       const enviado = await conTimeout(message.reply(media, undefined, { caption: r.imagen.caption }), 60000, "imagen");
-      // Para poder borrarla después con /mbot image delete.
-      live.registrarImagenEnviada(enviado, message.fromMe ? message.to : message.from);
+      // Para /mbot image delete. Con imágenes WhatsApp Web casi nunca devuelve
+      // el mensaje enviado: el registro de verdad se hace cuando vuelve por
+      // message_create (ver processMessage).
+      if (enviado?.id?.id) live.registrarImagenEnviada(enviado, message.fromMe ? message.to : message.from);
     } else if (r.texto) {
       await conTimeout(message.reply(r.texto), REPLY_TIMEOUT, "respuesta de imagen");
     }
@@ -845,6 +847,13 @@ async function atenderImagen(message) {
 
 async function processMessage(message) {
   if (message.timestamp && message.timestamp < ARRANQUE_TS) return;
+
+  // Una imagen que mandó el bot vuelve por acá con su id completo: se
+  // registra para poder borrarla con /mbot image delete.
+  if (message.fromMe && message.type === "image" && live.esRespuestaLLM(live.textoDeMensaje(message))) {
+    live.registrarImagenEnviada(message, message.to);
+    return;
+  }
 
   // Lo que mandamos con un LLM jamás se procesa: ni como comando ni como
   // pregunta. (Igual no podría: nunca empieza con "/" ni "@", ver

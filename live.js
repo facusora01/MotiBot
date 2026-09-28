@@ -592,30 +592,51 @@ async function comandoImagen(message, client) {
 const RECUERDO_IMAGENES = 48 * 60 * 60 * 1000;
 const imagenesEnviadas = new Map(); // id del mensaje -> { mensaje, groupId, ts }
 
+// En una imagen, la leyenda puede venir en caption y no en body.
+function textoDeMensaje(m) {
+  return String(m?._data?.caption || m?.caption || m?.body || "");
+}
+
+// ¿Es una imagen que mandó el bot, con la firma del LLM?
+function esImagenDelBot(m) {
+  return Boolean(m && (m.fromMe || m.id?.fromMe) && m.type === "image" && esRespuestaLLM(textoDeMensaje(m)));
+}
+
 function registrarImagenEnviada(enviado, groupId) {
   const id = enviado?.id?.id;
-  if (!id) return console.warn("⚠️ [live] La imagen se mandó pero no vino su id: no se podrá borrar con el comando.");
+  if (!id || imagenesEnviadas.has(id)) return;
   imagenesEnviadas.set(id, { mensaje: enviado, groupId, ts: Date.now() });
   console.log(`🎨 [live] Imagen registrada para borrar: ${id} en ${groupId}.`);
 }
 
-// Plan B (por ejemplo, después de un reinicio del bot): la busca en la
-// memoria de WhatsApp Web por su id, y sirve solo si la mandó el bot, es una
-// imagen de este grupo y tiene la firma del LLM.
-async function buscarImagenDelBot(client, stanzaId, groupId) {
+// Plan B (por ejemplo, después de un reinicio del bot): la busca en WhatsApp
+// Web. Primero por los ids que puede tener un mensaje propio en un grupo, y
+// si no, en la memoria de la página. Sirve solo si es una imagen del bot, de
+// este grupo y con la firma del LLM.
+async function buscarImagenDelBot(client, stanzaId, groupId, participante) {
+  const candidatos = [`true_${groupId}_${stanzaId}`];
+  if (participante) candidatos.push(`true_${groupId}_${stanzaId}_${participante}`);
   try {
-    const serializado = await client.pupPage.evaluate((sid, gid) => {
-      const m = window.Store.Msg.getModelsArray().find((x) => x.id?.id === sid);
-      const chat = m?.id?.remote?._serialized || m?.id?.remote;
-      return m && m.id.fromMe && m.type === "image" && chat === gid ? m.id._serialized : null;
-    }, stanzaId, groupId);
-    if (!serializado) return null;
-    const mensaje = await client.getMessageById(serializado);
-    return mensaje && esRespuestaLLM(mensaje.body) ? mensaje : null;
+    const enPagina = await client.pupPage.evaluate((sid) => {
+      const m = window.Store.Msg.get?.(sid) || window.Store.Msg.getModelsArray().find((x) => x.id?.id === sid);
+      return m?.id?._serialized || null;
+    }, stanzaId);
+    if (enPagina) candidatos.push(enPagina);
   } catch (e) {
-    console.warn("⚠️ [live] No pude buscar la imagen en WhatsApp Web:", e.message);
-    return null;
+    console.warn("⚠️ [live] No pude buscar la imagen en la memoria de WhatsApp Web:", e.message);
   }
+
+  for (const id of [...new Set(candidatos)]) {
+    try {
+      const m = await client.getMessageById(id);
+      const ok = esImagenDelBot(m) && (m.id?.remote?._serialized || m.id?.remote || m.to) === groupId;
+      console.log(`🎨 [live] Plan B: ${id} → ${m ? `${m.type}, propio=${Boolean(m.fromMe)}, firma=${esRespuestaLLM(textoDeMensaje(m))}` : "no existe"}${ok ? " ✔" : ""}`);
+      if (ok) return m;
+    } catch (e) {
+      console.log(`🎨 [live] Plan B: ${id} → error ${e.message}`);
+    }
+  }
+  return null;
 }
 
 setInterval(() => {
@@ -632,7 +653,10 @@ async function borrarImagen(message, client) {
   const idCitado = message._data?.quotedStanzaID;
   const registrada = idCitado && imagenesEnviadas.get(idCitado);
   let mensaje = registrada && registrada.groupId === groupId ? registrada.mensaje : null;
-  if (!mensaje && idCitado) mensaje = await buscarImagenDelBot(client, idCitado, groupId);
+  if (!mensaje && idCitado) {
+    const part = message._data?.quotedParticipant;
+    mensaje = await buscarImagenDelBot(client, idCitado, groupId, typeof part === "string" ? part : part?._serialized);
+  }
   console.log(`🎨 [live] Borrar imagen: citada=${idCitado || "(sin id)"} · en memoria=${Boolean(registrada)} · encontrada=${Boolean(mensaje)} · registradas=${imagenesEnviadas.size}`);
 
   if (!mensaje) {
@@ -652,6 +676,7 @@ module.exports = {
   esPedidoDeImagen,
   comandoImagen,
   registrarImagenEnviada,
+  textoDeMensaje,
   // Para tests
   _memoria: { recuerdos, recordar, olvidar, MEMORIA },
   esRespuestaLLM,
